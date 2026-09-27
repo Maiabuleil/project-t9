@@ -14,6 +14,7 @@ export type MediaItem = {
   phase: MediaPhase
   location: string
   note: string
+  file?: File
 }
 
 export type InspectionId = 'flushing' | 'flood' | 'camera'

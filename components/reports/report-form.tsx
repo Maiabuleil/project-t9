@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ArrowRight, CheckCheck, Save } from 'lucide-react'
 import type { Finding, Inspection, Report, ReportDetails } from '@/lib/types'
 import { resolveFinalStatus } from '@/lib/report-utils'
@@ -15,11 +15,18 @@ type ReportFormProps = {
   isNew: boolean
   onCancel: () => void
   onSave: (report: Report) => void
+  onAutosave?: (report: Report) => void
 }
 
 export function ReportForm({ initialReport, isNew, onCancel, onSave }: ReportFormProps) {
   const [report, setReport] = useState<Report>(initialReport)
   const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!onAutosave) return
+    const timer = window.setTimeout(() => onAutosave({ ...report, status: 'draft' }), 1200)
+    return () => window.clearTimeout(timer)
+  }, [report, onAutosave])
 
   function updateDetails(details: ReportDetails) {
     setReport((prev) => ({ ...prev, details }))

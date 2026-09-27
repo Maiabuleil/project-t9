@@ -37,6 +37,7 @@ export function MediaSection({ inspectionId, media, onChange }: MediaSectionProp
     const items: MediaItem[] = files.map((file) => ({
       id: createId(),
       url: URL.createObjectURL(file),
+      file,
       kind: file.type.startsWith('video') ? 'video' : 'image',
       name: file.name,
       phase: uploadPhase,
