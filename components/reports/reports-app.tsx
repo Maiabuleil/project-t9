@@ -32,12 +32,26 @@ export function ReportsApp() {
     if (!session?.user) { setLoading(false); return }
     const load = async () => {
       const supabase = createClient()
-      const [{ data: currentProfile }, { data: rows }] = await Promise.all([
+      const [{ data: currentProfile }, { data: rows, error: reportsError }] = await Promise.all([
         supabase.from('profiles').select('full_name, role').eq('id', session.user.id).single(),
         supabase.from('reports').select('id, status, project, report_number, address, building, apartment, floor, client_name, inspector, report_date, owner_id, inspections(id, inspection_key, result, note), findings(id, location, description, severity, recommendation)').order('updated_at', { ascending: false }),
       ])
+      if (reportsError) {
+        setMessage('טעינת הדוחות נכשלה. בדקו את החיבור ונסו שוב.')
+        setLoading(false)
+        return
+      }
+      const reportRows = rows ?? []
+      const reportIds = reportRows.map((row: any) => row.id)
+      const { data: mediaRows } = reportIds.length
+        ? await supabase.from('media_assets').select('id, report_id, inspection_id, storage_path, kind, phase, file_name, location, note').in('report_id', reportIds)
+        : { data: [] as any[] }
+      const mediaWithUrls = await Promise.all((mediaRows ?? []).map(async (media: any) => {
+        const { data } = await supabase.storage.from('report-media').createSignedUrl(media.storage_path, 3600)
+        return { ...media, url: data?.signedUrl ?? '' }
+      }))
       setProfile(currentProfile)
-      setReports((rows ?? []).map(fromDatabase))
+      setReports(reportRows.map((row: any) => fromDatabase(row, mediaWithUrls.filter((media: any) => media.report_id === row.id))))
       setLoading(false)
     }
     load()
@@ -56,13 +70,22 @@ export function ReportsApp() {
     if (error || !saved) { setMessage('שמירת הדוח נכשלה. בדקו את החיבור ונסו שוב.'); return }
     const { data: savedInspections } = await supabase.from('inspections').upsert(report.inspections.map((inspection) => ({ report_id: saved.id, inspection_key: inspection.id, result: inspection.result, note: inspection.note })), { onConflict: 'report_id,inspection_key' }).select('id, inspection_key')
     const inspectionIds = new Map((savedInspections ?? []).map((item: { inspection_key: string; id: string }) => [item.inspection_key, item.id]))
-    await supabase.from('media_assets').delete().eq('report_id', saved.id)
+    const { data: previousMedia } = await supabase.from('media_assets').select('id, storage_path').eq('report_id', saved.id)
+    const keptMediaIds = new Set(report.inspections.flatMap((inspection) => inspection.media.filter((media) => !media.file).map((media) => media.id)))
+    const removedMedia = (previousMedia ?? []).filter((media: any) => !keptMediaIds.has(media.id))
+    for (const media of removedMedia) await supabase.storage.from('report-media').remove([media.storage_path])
+    if (removedMedia.length) await supabase.from('media_assets').delete().in('id', removedMedia.map((media: any) => media.id))
     for (const inspection of report.inspections) for (const media of inspection.media) if (media.file) {
       const path = `${session.user.id}/${saved.id}/${media.id}-${media.name}`
-      const upload = await supabase.storage.from('report-media').upload(path, media.file, { upsert: true, contentType: media.file.type })
-      if (upload.error) { setMessage('הדוח נשמר, אך העלאת אחד מקובצי המדיה נכשלה.'); return }
-      const { error: mediaError } = await supabase.from('media_assets').insert({ report_id: saved.id, inspection_id: inspectionIds.get(inspection.id), storage_path: path, kind: media.kind, phase: media.phase, file_name: media.name, location: media.location, note: media.note })
+      const inspectionId = inspectionIds.get(inspection.id)
+      const { error: mediaError } = await supabase.from('media_assets').insert({ report_id: saved.id, inspection_id: inspectionId, user_id: session.user.id, storage_path: path, kind: media.kind, phase: media.phase, file_name: media.name, location: media.location, note: media.note })
       if (mediaError) { setMessage('הדוח נשמר, אך שמירת פרטי המדיה נכשלה.'); return }
+      const upload = await supabase.storage.from('report-media').upload(path, media.file, { upsert: true, contentType: media.file.type })
+      if (upload.error) {
+        await supabase.from('media_assets').delete().eq('storage_path', path)
+        setMessage('הדוח נשמר, אך העלאת אחד מקובצי המדיה נכשלה.')
+        return
+      }
     }
     await supabase.from('findings').delete().eq('report_id', saved.id)
     if (report.findings.length) await supabase.from('findings').insert(report.findings.map((finding) => ({ report_id: saved.id, location: finding.location, description: finding.description, severity: finding.severity, recommendation: finding.recommendation })))
@@ -74,8 +97,8 @@ export function ReportsApp() {
   return <div className="mx-auto min-h-dvh w-full max-w-md bg-background"><header className="flex items-center justify-between border-b border-border bg-card px-4 py-3"><div><p className="text-xs font-bold text-primary">שארק רובוטים מתקדמים</p><p className="text-sm font-semibold">{profile?.full_name || session.user.email} · {profile?.role === 'manager' ? 'מנהל' : 'עובד'}</p></div><button type="button" onClick={() => createClient().auth.signOut()} className="flex size-10 items-center justify-center rounded-xl hover:bg-muted" aria-label="התנתקות"><LogOut className="size-5" /></button></header>{activeReport ? <ReportForm key={activeReport.id} initialReport={activeReport} isNew={isNew} onCancel={closeReport} onSave={saveReport} onAutosave={(draft) => saveReport(draft, false)} /> : <><ReportList reports={reports.length ? reports : SAMPLE_REPORTS} onCreate={() => openReport(createEmptyReport(reports), true)} onOpen={(report) => openReport(report, false)} /><div className="px-4 pb-6"><p className="mb-3 text-xs text-muted-foreground">הדוחות המוצגים ללא התחברות למסד הנתונים מסומנים כדוגמה.</p>{profile?.role === 'manager' && <ManagerInvite />}{message && <p role="status" className="mt-3 rounded-xl bg-success-soft px-3 py-3 text-sm text-success">{message}</p>}</div></>}</div>
 }
 
-function fromDatabase(row: any): Report {
-  return { id: row.id, status: row.status, details: { project: row.project, reportNumber: row.report_number, address: row.address, building: row.building, apartment: row.apartment, floor: row.floor, clientName: row.client_name, inspector: row.inspector, date: row.report_date ?? '' }, inspections: inspectionNames.map((id) => { const item = row.inspections?.find((entry: any) => entry.inspection_key === id); return { id, result: item?.result ?? null, note: item?.note ?? '', media: [] } }), findings: row.findings ?? [] }
+function fromDatabase(row: any, mediaRows: any[] = []): Report {
+  return { id: row.id, status: row.status, details: { project: row.project, reportNumber: row.report_number, address: row.address, building: row.building, apartment: row.apartment, floor: row.floor, clientName: row.client_name, inspector: row.inspector, date: row.report_date ?? '' }, inspections: inspectionNames.map((id) => { const item = row.inspections?.find((entry: any) => entry.inspection_key === id); return { id, result: item?.result ?? null, note: item?.note ?? '', media: mediaRows.filter((media) => media.inspection_id === item?.id).map((media) => ({ id: media.id, url: media.url, kind: media.kind, name: media.file_name, phase: media.phase, location: media.location, note: media.note, storagePath: media.storage_path })) } }), findings: row.findings ?? [] }
 }
 
 function ManagerInvite() {

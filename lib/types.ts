@@ -15,6 +15,7 @@ export type MediaItem = {
   location: string
   note: string
   file?: File
+  storagePath?: string
 }
 
 export type InspectionId = 'flushing' | 'flood' | 'camera'
