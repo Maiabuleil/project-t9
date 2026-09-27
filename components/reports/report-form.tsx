@@ -18,7 +18,7 @@ type ReportFormProps = {
   onAutosave?: (report: Report) => void
 }
 
-export function ReportForm({ initialReport, isNew, onCancel, onSave }: ReportFormProps) {
+export function ReportForm({ initialReport, isNew, onCancel, onSave, onAutosave }: ReportFormProps) {
   const [report, setReport] = useState<Report>(initialReport)
   const [error, setError] = useState<string | null>(null)
 
