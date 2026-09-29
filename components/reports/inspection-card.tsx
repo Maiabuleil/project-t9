@@ -54,11 +54,13 @@ export function InspectionCard({ inspection, onChange }: InspectionCardProps) {
           active={inspection.result === 'ok'}
           onClick={() => setResult('ok')}
           tone="ok"
+          label={inspection.id === 'flushing' ? 'כן' : 'תקין'}
         />
         <ResultButton
           active={inspection.result === 'not-ok'}
           onClick={() => setResult('not-ok')}
           tone="not-ok"
+          label={inspection.id === 'flushing' ? 'לא' : 'לא תקין'}
         />
       </div>
 
@@ -85,10 +87,12 @@ function ResultButton({
   active,
   onClick,
   tone,
+  label,
 }: {
   active: boolean
   onClick: () => void
   tone: 'ok' | 'not-ok'
+  label: string
 }) {
   const isOk = tone === 'ok'
   const Icon = isOk ? CircleCheck : CircleX
@@ -105,7 +109,7 @@ function ResultButton({
       )}
     >
       <Icon className="size-6" aria-hidden="true" />
-      {isOk ? 'תקין' : 'לא תקין'}
+      {label}
     </button>
   )
 }
