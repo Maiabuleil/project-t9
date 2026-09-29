@@ -112,7 +112,11 @@ export function ReportsApp() {
       const nextMedia: MediaItem[] = []
       for (const media of inspection.media) {
         if (!media.file) { nextMedia.push(media); continue }
-        const path = `${session.user.id}/${saved.id}/${media.id}-${media.name}`
+        // Build a Supabase-safe storage key: raw device filenames often contain Hebrew, spaces, or symbols that Storage rejects as an "Invalid key", which fails the upload. The random media.id keeps the key unique; the human-readable name stays in the file_name column.
+        const rawExt = media.name.includes('.') ? media.name.split('.').pop() ?? '' : ''
+        const safeExt = rawExt.replace(/[^a-zA-Z0-9]/g, '').toLowerCase().slice(0, 8)
+        const ext = safeExt || (media.kind === 'video' ? 'mp4' : 'jpg')
+        const path = `${session.user.id}/${saved.id}/${media.id}.${ext}`
         // Insert the media row first: the storage INSERT RLS policy requires a matching media_assets row (same storage_path/user_id/report owner) to exist before the file upload is permitted.
         const { data: insertedMedia, error: mediaError } = await supabase.from('media_assets').insert({ report_id: saved.id, inspection_id: inspectionIds.get(inspection.id) ?? null, user_id: session.user.id, storage_path: path, kind: media.kind, phase: media.phase, file_name: media.name, location: media.location, note: media.note }).select('id').single()
         if (mediaError || !insertedMedia) { failedNames.push(media.name); nextMedia.push(media); continue }
