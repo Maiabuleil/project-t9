@@ -113,10 +113,11 @@ export function ReportsApp() {
       for (const media of inspection.media) {
         if (!media.file) { nextMedia.push(media); continue }
         const path = `${session.user.id}/${saved.id}/${media.id}-${media.name}`
-        const upload = await supabase.storage.from('report-media').upload(path, media.file, { upsert: true, contentType: media.file.type })
-        if (upload.error) { failedNames.push(media.name); nextMedia.push(media); continue }
+        // Insert the media row first: the storage INSERT RLS policy requires a matching media_assets row (same storage_path/user_id/report owner) to exist before the file upload is permitted.
         const { data: insertedMedia, error: mediaError } = await supabase.from('media_assets').insert({ report_id: saved.id, inspection_id: inspectionIds.get(inspection.id) ?? null, user_id: session.user.id, storage_path: path, kind: media.kind, phase: media.phase, file_name: media.name, location: media.location, note: media.note }).select('id').single()
-        if (mediaError || !insertedMedia) { await supabase.storage.from('report-media').remove([path]); failedNames.push(media.name); nextMedia.push(media); continue }
+        if (mediaError || !insertedMedia) { failedNames.push(media.name); nextMedia.push(media); continue }
+        const upload = await supabase.storage.from('report-media').upload(path, media.file, { upsert: true, contentType: media.file.type })
+        if (upload.error) { await supabase.from('media_assets').delete().eq('id', insertedMedia.id); failedNames.push(media.name); nextMedia.push(media); continue }
         const { data: signed } = await supabase.storage.from('report-media').createSignedUrl(path, 3600)
         nextMedia.push({ id: insertedMedia.id, url: signed?.signedUrl ?? '', kind: media.kind, name: media.name, phase: media.phase, location: media.location, note: media.note, storagePath: path })
       }
