@@ -1,11 +1,12 @@
 'use client'
 
 import { useRef, useState, type ChangeEvent } from 'react'
-import { Camera, ImagePlus, MapPin, Play, Video } from 'lucide-react'
+import { Camera, ImagePlus, MapPin, Video } from 'lucide-react'
 import type { InspectionId, MediaItem, MediaPhase } from '@/lib/types'
 import { createId } from '@/lib/report-utils'
 import { cn } from '@/lib/utils'
 import { MediaEditorSheet } from './media-editor-sheet'
+import { MediaView } from './media-view'
 
 type MediaSectionProps = {
   inspectionId: InspectionId
@@ -216,19 +217,7 @@ function MediaThumb({ item, onClick }: { item: MediaItem; onClick: () => void })
       className="flex w-full flex-col gap-1 text-start focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring/30 rounded-md"
     >
       <div className="relative aspect-square w-full overflow-hidden rounded-md bg-muted">
-        {item.kind === 'image' ? (
-          <img src={item.url || '/placeholder.svg'} alt={item.note || item.location || 'תמונת תיעוד'} className="size-full object-cover" />
-        ) : (
-          <>
-            <video src={item.url} muted playsInline preload="metadata" className="size-full object-cover" />
-            <span className="absolute inset-0 flex items-center justify-center bg-foreground/25">
-              <span className="flex size-10 items-center justify-center rounded-full bg-card/90 text-foreground">
-                <Play className="size-5 fill-current" aria-hidden="true" />
-                <span className="sr-only">סרטון</span>
-              </span>
-            </span>
-          </>
-        )}
+        <MediaView item={item} variant="thumb" />
       </div>
       <span
         className={cn(
