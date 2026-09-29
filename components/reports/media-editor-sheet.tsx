@@ -5,6 +5,7 @@ import { Trash2, X } from 'lucide-react'
 import type { MediaItem, MediaPhase } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { Field, TextArea, TextInput } from './fields'
+import { MediaView } from './media-view'
 
 type MediaEditorSheetProps = {
   item: MediaItem | null
@@ -55,12 +56,8 @@ export function MediaEditorSheet({ item, onClose, onUpdate, onRemove }: MediaEdi
             </button>
           </div>
 
-          <div className="overflow-hidden rounded-xl bg-foreground">
-            {item.kind === 'image' ? (
-              <img src={item.url || '/placeholder.svg'} alt={item.note || 'תצוגה מקדימה'} className="max-h-72 w-full object-contain" />
-            ) : (
-              <video src={item.url} controls playsInline className="max-h-72 w-full" />
-            )}
+          <div className="relative overflow-hidden rounded-xl bg-foreground">
+            <MediaView item={item} variant="preview" />
           </div>
           <p className="truncate text-xs text-muted-foreground" dir="ltr">
             {item.name}
