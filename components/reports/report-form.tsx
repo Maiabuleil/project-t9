@@ -1,8 +1,9 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { ArrowRight, CheckCheck, Save } from 'lucide-react'
+import { ArrowRight, CheckCheck, Loader2, Save } from 'lucide-react'
 import type { Finding, Inspection, Report, ReportDetails } from '@/lib/types'
+import type { SaveProgress } from './reports-app'
 import { resolveFinalStatus } from '@/lib/report-utils'
 import { StatusBadge } from './status-badge'
 import { DetailsSection } from './details-section'
@@ -14,13 +15,15 @@ type ReportFormProps = {
   initialReport: Report
   isNew: boolean
   onCancel: () => void
-  onSave: (report: Report) => Promise<Report | void> | void
+  onSave: (report: Report, onProgress?: (p: SaveProgress) => void) => Promise<Report | void> | void
   onAutosave?: (report: Report) => Promise<Report | void> | void
 }
 
 export function ReportForm({ initialReport, isNew, onCancel, onSave, onAutosave }: ReportFormProps) {
   const [report, setReport] = useState<Report>(initialReport)
   const [error, setError] = useState<string | null>(null)
+  const [isSaving, setIsSaving] = useState(false)
+  const [progress, setProgress] = useState<SaveProgress | null>(null)
   // Skips the autosave that a saved-result adoption would otherwise trigger, preventing a save loop.
   const skipNextAutosave = useRef(false)
 
@@ -50,12 +53,20 @@ export function ReportForm({ initialReport, isNew, onCancel, onSave, onAutosave 
   }
 
   async function handleSaveDraft() {
+    if (isSaving) return
     setError(null)
-    const result = await onSave({ ...report, status: 'draft' })
-    if (result) { skipNextAutosave.current = true; setReport(result) }
+    setIsSaving(true)
+    try {
+      const result = await onSave({ ...report, status: 'draft' }, setProgress)
+      if (result) { skipNextAutosave.current = true; setReport(result) }
+    } finally {
+      setIsSaving(false)
+      setProgress(null)
+    }
   }
 
   async function handleFinish() {
+    if (isSaving) return
     const missing: string[] = []
     if (!report.details.address.trim()) missing.push('כתובת')
     if (!report.details.apartment.trim()) missing.push('מספר דירה')
@@ -66,8 +77,14 @@ export function ReportForm({ initialReport, isNew, onCancel, onSave, onAutosave 
       return
     }
     setError(null)
-    const result = await onSave({ ...report, status: resolveFinalStatus(report) })
-    if (result) { skipNextAutosave.current = true; setReport(result) }
+    setIsSaving(true)
+    try {
+      const result = await onSave({ ...report, status: resolveFinalStatus(report) }, setProgress)
+      if (result) { skipNextAutosave.current = true; setReport(result) }
+    } finally {
+      setIsSaving(false)
+      setProgress(null)
+    }
   }
 
   return (
@@ -117,22 +134,35 @@ export function ReportForm({ initialReport, isNew, onCancel, onSave, onAutosave 
             {error}
           </p>
         )}
+        {isSaving && progress && (
+          <div role="status" className="flex flex-col gap-1.5 rounded-lg bg-muted px-3 py-2">
+            <div className="flex items-center justify-between text-xs font-medium text-muted-foreground">
+              <span className="truncate">מעלה: {progress.fileName} ({Math.min(progress.done + 1, progress.total)}/{progress.total})</span>
+              <span>{progress.percent}%</span>
+            </div>
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-border">
+              <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${progress.percent}%` }} />
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-5 gap-2">
           <button
             type="button"
             onClick={handleSaveDraft}
-            className="col-span-2 flex h-14 items-center justify-center gap-2 rounded-xl border border-input bg-card text-base font-semibold hover:bg-muted"
+            disabled={isSaving}
+            className="col-span-2 flex h-14 items-center justify-center gap-2 rounded-xl border border-input bg-card text-base font-semibold hover:bg-muted disabled:opacity-60"
           >
-            <Save className="size-5" aria-hidden="true" />
+            {isSaving ? <Loader2 className="size-5 animate-spin" aria-hidden="true" /> : <Save className="size-5" aria-hidden="true" />}
             שמירת טיוטה
           </button>
           <button
             type="button"
             onClick={handleFinish}
-            className="col-span-3 flex h-14 items-center justify-center gap-2 rounded-xl bg-primary text-base font-bold text-primary-foreground hover:bg-primary/90"
+            disabled={isSaving}
+            className="col-span-3 flex h-14 items-center justify-center gap-2 rounded-xl bg-primary text-base font-bold text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
           >
-            <CheckCheck className="size-5" aria-hidden="true" />
-            סיום ושמירת דוח
+            {isSaving ? <Loader2 className="size-5 animate-spin" aria-hidden="true" /> : <CheckCheck className="size-5" aria-hidden="true" />}
+            {isSaving ? 'שומר...' : 'סיום ושמירת דוח'}
           </button>
         </div>
       </footer>
