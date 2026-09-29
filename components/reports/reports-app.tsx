@@ -6,11 +6,14 @@ import { SAMPLE_REPORTS } from '@/lib/sample-data'
 import { createEmptyReport } from '@/lib/report-utils'
 import type { Inspection, MediaItem, Report } from '@/lib/types'
 import { createClient } from '@/lib/supabase/client'
+import { uploadMediaFile } from '@/lib/upload-media'
 import { ReportList } from './report-list'
 import { ReportForm } from './report-form'
 import { LoginScreen } from '@/components/auth/login-screen'
 
 const inspectionNames = ['flushing', 'flood', 'camera', 'ac-line'] as const
+
+export type SaveProgress = { fileName: string; done: number; total: number; percent: number }
 
 export function ReportsApp() {
   const [session, setSession] = useState<any>(null)
@@ -75,8 +78,9 @@ export function ReportsApp() {
     setMessage('הדוח נמחק בהצלחה.')
   }
 
-  async function saveReport(report: Report, close = true): Promise<Report | void> {
+  async function saveReport(report: Report, close = true, onProgress?: (p: SaveProgress) => void): Promise<Report | void> {
     setMessage('')
+    console.log('[v0] saving report', { id: report.id, status: report.status })
     const supabase = createClient()
     const basePayload = { id: report.id, owner_id: session.user.id, status: report.status, project: report.details.project, address: report.details.address, building: report.details.building, apartment: report.details.apartment, floor: report.details.floor, client_name: report.details.clientName, inspector: report.details.inspector, report_date: report.details.date || null, updated_at: new Date().toISOString() }
     // Omit report_number for brand-new reports so the database sequence assigns a unique number (safe under concurrency).
@@ -108,6 +112,8 @@ export function ReportsApp() {
     // Upload each pending file. On failure keep the item pending so it can be retried from the same report without duplicating already-uploaded files.
     const failedNames: string[] = []
     const persistedInspections: Inspection[] = []
+    const pendingTotal = report.inspections.reduce((sum, inspection) => sum + inspection.media.filter((media) => media.file).length, 0)
+    let pendingDone = 0
     for (const inspection of report.inspections) {
       const nextMedia: MediaItem[] = []
       for (const media of inspection.media) {
@@ -117,11 +123,23 @@ export function ReportsApp() {
         const safeExt = rawExt.replace(/[^a-zA-Z0-9]/g, '').toLowerCase().slice(0, 8)
         const ext = safeExt || (media.kind === 'video' ? 'mp4' : 'jpg')
         const path = `${session.user.id}/${saved.id}/${media.id}.${ext}`
+        console.log('[v0] uploading media', { name: media.name, kind: media.kind, size: media.file.size, path })
+        onProgress?.({ fileName: media.name, done: pendingDone, total: pendingTotal, percent: 0 })
         // Insert the media row first: the storage INSERT RLS policy requires a matching media_assets row (same storage_path/user_id/report owner) to exist before the file upload is permitted.
         const { data: insertedMedia, error: mediaError } = await supabase.from('media_assets').insert({ report_id: saved.id, inspection_id: inspectionIds.get(inspection.id) ?? null, user_id: session.user.id, storage_path: path, kind: media.kind, phase: media.phase, file_name: media.name, location: media.location, note: media.note }).select('id').single()
-        if (mediaError || !insertedMedia) { failedNames.push(media.name); nextMedia.push(media); continue }
-        const upload = await supabase.storage.from('report-media').upload(path, media.file, { upsert: true, contentType: media.file.type })
-        if (upload.error) { await supabase.from('media_assets').delete().eq('id', insertedMedia.id); failedNames.push(media.name); nextMedia.push(media); continue }
+        if (mediaError || !insertedMedia) { console.log('[v0] media record insert failed', mediaError?.message); failedNames.push(media.name); nextMedia.push(media); pendingDone += 1; continue }
+        try {
+          await uploadMediaFile({ supabase, path, file: media.file, onProgress: (p) => onProgress?.({ fileName: media.name, done: pendingDone, total: pendingTotal, percent: p.total ? Math.round((p.loaded / p.total) * 100) : 0 }) })
+        } catch (uploadError) {
+          console.log('[v0] media upload failed', media.name, uploadError instanceof Error ? uploadError.message : uploadError)
+          await supabase.from('media_assets').delete().eq('id', insertedMedia.id)
+          failedNames.push(media.name)
+          nextMedia.push(media)
+          pendingDone += 1
+          continue
+        }
+        console.log('[v0] media upload success', media.name)
+        pendingDone += 1
         const { data: signed } = await supabase.storage.from('report-media').createSignedUrl(path, 3600)
         nextMedia.push({ id: insertedMedia.id, url: signed?.signedUrl ?? '', kind: media.kind, name: media.name, phase: media.phase, location: media.location, note: media.note, storagePath: path })
       }
@@ -138,7 +156,7 @@ export function ReportsApp() {
     return persisted
   }
 
-  return <div className="mx-auto min-h-dvh w-full max-w-md bg-background"><header className="flex items-center justify-between border-b border-border bg-card px-4 py-3"><div><p className="text-xs font-bold text-primary">שארק רובוטים מתקדמים</p><p className="text-sm font-semibold">{profile?.full_name || session.user.email} · {profile?.role === 'manager' ? 'מנהל' : 'עובד'}</p></div><button type="button" onClick={() => createClient().auth.signOut()} className="flex size-10 items-center justify-center rounded-xl hover:bg-muted" aria-label="התנתקות"><LogOut className="size-5" /></button></header>{activeReport ? <ReportForm key={activeReport.id} initialReport={activeReport} isNew={isNew} onCancel={closeReport} onSave={saveReport} onAutosave={(draft) => saveReport(draft, false)} /> : <><ReportList reports={reports.length ? reports : SAMPLE_REPORTS} onCreate={() => openReport(createEmptyReport(reports), true)} onOpen={(report) => openReport(report, false)} canDelete={profile?.role === 'manager' && reports.length > 0} onDelete={deleteReport} /><div className="px-4 pb-6"><p className="mb-3 text-xs text-muted-foreground">הדוחות המוצגים ללא התחברות למסד הנתונים מסומנים כדוגמה.</p>{profile?.role === 'manager' && <ManagerInvite />}{message && <p role="status" className="mt-3 rounded-xl bg-success-soft px-3 py-3 text-sm text-success">{message}</p>}</div></>}</div>
+  return <div className="mx-auto min-h-dvh w-full max-w-md bg-background"><header className="flex items-center justify-between border-b border-border bg-card px-4 py-3"><div><p className="text-xs font-bold text-primary">שארק רובוטים מתקדמים</p><p className="text-sm font-semibold">{profile?.full_name || session.user.email} · {profile?.role === 'manager' ? 'מנהל' : 'עובד'}</p></div><button type="button" onClick={() => createClient().auth.signOut()} className="flex size-10 items-center justify-center rounded-xl hover:bg-muted" aria-label="התנתקות"><LogOut className="size-5" /></button></header>{activeReport ? <ReportForm key={activeReport.id} initialReport={activeReport} isNew={isNew} onCancel={closeReport} onSave={(report, onProgress) => saveReport(report, true, onProgress)} onAutosave={(draft) => saveReport(draft, false)} /> : <><ReportList reports={reports.length ? reports : SAMPLE_REPORTS} onCreate={() => openReport(createEmptyReport(reports), true)} onOpen={(report) => openReport(report, false)} canDelete={profile?.role === 'manager' && reports.length > 0} onDelete={deleteReport} /><div className="px-4 pb-6"><p className="mb-3 text-xs text-muted-foreground">הדוחות המוצגים ללא התחברות למסד הנתונים מסומנים כדוגמה.</p>{profile?.role === 'manager' && <ManagerInvite />}{message && <p role="status" className="mt-3 rounded-xl bg-success-soft px-3 py-3 text-sm text-success">{message}</p>}</div></>}</div>
 }
 
 function fromDatabase(row: any, mediaRows: any[] = []): Report {
