@@ -10,7 +10,7 @@ import { ReportList } from './report-list'
 import { ReportForm } from './report-form'
 import { LoginScreen } from '@/components/auth/login-screen'
 
-const inspectionNames = ['flushing', 'flood', 'camera'] as const
+const inspectionNames = ['flushing', 'flood', 'camera', 'ac-line'] as const
 
 export function ReportsApp() {
   const [session, setSession] = useState<any>(null)

@@ -22,9 +22,13 @@ export const INSPECTION_META: Record<
     title: 'צילום פנים צנרת',
     description: 'החדרת מצלמה לצנרת ותיעוד מצב הדפנות, סתימות ושברים.',
   },
+  'ac-line': {
+    title: 'בדיקת קו מזגן',
+    description: 'בדיקת קו ניקוז המזגן וזרימת המים בו. בדיקה אופציונלית.',
+  },
 }
 
-export const INSPECTION_ORDER: InspectionId[] = ['flushing', 'flood', 'camera']
+export const INSPECTION_ORDER: InspectionId[] = ['flushing', 'flood', 'camera', 'ac-line']
 
 export const STATUS_META: Record<ReportStatus, { label: string; className: string }> = {
   draft: { label: 'טיוטה', className: 'bg-muted text-muted-foreground' },
