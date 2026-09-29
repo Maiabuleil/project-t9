@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ArrowRight, CheckCheck, Save } from 'lucide-react'
 import type { Finding, Inspection, Report, ReportDetails } from '@/lib/types'
 import { resolveFinalStatus } from '@/lib/report-utils'
@@ -14,17 +14,23 @@ type ReportFormProps = {
   initialReport: Report
   isNew: boolean
   onCancel: () => void
-  onSave: (report: Report) => void
-  onAutosave?: (report: Report) => void
+  onSave: (report: Report) => Promise<Report | void> | void
+  onAutosave?: (report: Report) => Promise<Report | void> | void
 }
 
 export function ReportForm({ initialReport, isNew, onCancel, onSave, onAutosave }: ReportFormProps) {
   const [report, setReport] = useState<Report>(initialReport)
   const [error, setError] = useState<string | null>(null)
+  // Skips the autosave that a saved-result adoption would otherwise trigger, preventing a save loop.
+  const skipNextAutosave = useRef(false)
 
   useEffect(() => {
     if (!onAutosave) return
-    const timer = window.setTimeout(() => onAutosave({ ...report, status: 'draft' }), 1200)
+    if (skipNextAutosave.current) { skipNextAutosave.current = false; return }
+    const timer = window.setTimeout(async () => {
+      const result = await onAutosave({ ...report, status: 'draft' })
+      if (result) { skipNextAutosave.current = true; setReport(result) }
+    }, 1200)
     return () => window.clearTimeout(timer)
   }, [report, onAutosave])
 
@@ -43,11 +49,13 @@ export function ReportForm({ initialReport, isNew, onCancel, onSave, onAutosave 
     setReport((prev) => ({ ...prev, findings }))
   }
 
-  function handleSaveDraft() {
-    onSave({ ...report, status: 'draft' })
+  async function handleSaveDraft() {
+    setError(null)
+    const result = await onSave({ ...report, status: 'draft' })
+    if (result) { skipNextAutosave.current = true; setReport(result) }
   }
 
-  function handleFinish() {
+  async function handleFinish() {
     const missing: string[] = []
     if (!report.details.address.trim()) missing.push('כתובת')
     if (!report.details.apartment.trim()) missing.push('מספר דירה')
@@ -57,7 +65,9 @@ export function ReportForm({ initialReport, isNew, onCancel, onSave, onAutosave 
       setError(`כדי לסיים את הדוח יש להשלים: ${missing.join(', ')}`)
       return
     }
-    onSave({ ...report, status: resolveFinalStatus(report) })
+    setError(null)
+    const result = await onSave({ ...report, status: resolveFinalStatus(report) })
+    if (result) { skipNextAutosave.current = true; setReport(result) }
   }
 
   return (
