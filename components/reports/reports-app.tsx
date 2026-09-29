@@ -80,8 +80,17 @@ export function ReportsApp() {
     const supabase = createClient()
     const { data: saved, error } = await supabase.from('reports').upsert({ id: report.id, owner_id: session.user.id, status: report.status, project: report.details.project, report_number: report.details.reportNumber, address: report.details.address, building: report.details.building, apartment: report.details.apartment, floor: report.details.floor, client_name: report.details.clientName, inspector: report.details.inspector, report_date: report.details.date || null, updated_at: new Date().toISOString() }).select('id').single()
     if (error || !saved) { setMessage('שמירת הדוח נכשלה. בדקו את החיבור ונסו שוב.'); return }
-    const { data: savedInspections } = await supabase.from('inspections').upsert(report.inspections.map((inspection) => ({ report_id: saved.id, inspection_key: inspection.id, result: inspection.result, note: inspection.note })), { onConflict: 'report_id,inspection_key' }).select('id, inspection_key')
-    const inspectionIds = new Map((savedInspections ?? []).map((item: { inspection_key: string; id: string }) => [item.inspection_key, item.id]))
+    const isFilled = (inspection: Report['inspections'][number]) => inspection.result !== null || inspection.note.trim() !== '' || inspection.media.length > 0
+    const filledInspections = report.inspections.filter(isFilled)
+    const emptyKeys = report.inspections.filter((inspection) => !isFilled(inspection)).map((inspection) => inspection.id)
+    if (emptyKeys.length) await supabase.from('inspections').delete().eq('report_id', saved.id).in('inspection_key', emptyKeys)
+    let savedInspections: { id: string; inspection_key: string }[] = []
+    if (filledInspections.length) {
+      const { data: upserted, error: inspectionError } = await supabase.from('inspections').upsert(filledInspections.map((inspection) => ({ report_id: saved.id, inspection_key: inspection.id, result: inspection.result, note: inspection.note })), { onConflict: 'report_id,inspection_key' }).select('id, inspection_key')
+      if (inspectionError) { setMessage('שמירת פרטי הבדיקות נכשלה. נסו שוב.'); return }
+      savedInspections = upserted ?? []
+    }
+    const inspectionIds = new Map(savedInspections.map((item) => [item.inspection_key, item.id]))
     const { data: previousMedia } = await supabase.from('media_assets').select('id, storage_path').eq('report_id', saved.id)
     const keptMediaIds = new Set(report.inspections.flatMap((inspection) => inspection.media.filter((media) => !media.file).map((media) => media.id)))
     const removedMedia = (previousMedia ?? []).filter((media: any) => !keptMediaIds.has(media.id))
