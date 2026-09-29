@@ -52,8 +52,6 @@ export function ReportForm({ initialReport, isNew, onCancel, onSave, onAutosave 
     if (!report.details.address.trim()) missing.push('כתובת')
     if (!report.details.apartment.trim()) missing.push('מספר דירה')
     if (!report.details.inspector.trim()) missing.push('מבצע הבדיקה')
-    const unchecked = report.inspections.filter((i) => i.result === null).length
-    if (unchecked > 0) missing.push(`תוצאה ל-${unchecked} בדיקות`)
 
     if (missing.length > 0) {
       setError(`כדי לסיים את הדוח יש להשלים: ${missing.join(', ')}`)
