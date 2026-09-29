@@ -63,6 +63,18 @@ export function ReportsApp() {
   function openReport(report: Report, fresh: boolean) { setActiveReport(report); setIsNew(fresh); window.scrollTo({ top: 0 }) }
   function closeReport() { setActiveReport(null); window.scrollTo({ top: 0 }) }
 
+  async function deleteReport(report: Report) {
+    setMessage('')
+    const response = await fetch(`/api/manager/reports/${report.id}`, { method: 'DELETE' })
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      setMessage(data.error || 'מחיקת הדוח נכשלה. הדוח לא נמחק.')
+      return
+    }
+    setReports((current) => current.filter((item) => item.id !== report.id))
+    setMessage('הדוח נמחק בהצלחה.')
+  }
+
   async function saveReport(report: Report, close = true) {
     setMessage('')
     const supabase = createClient()
@@ -94,7 +106,7 @@ export function ReportsApp() {
     if (close) closeReport()
   }
 
-  return <div className="mx-auto min-h-dvh w-full max-w-md bg-background"><header className="flex items-center justify-between border-b border-border bg-card px-4 py-3"><div><p className="text-xs font-bold text-primary">שארק רובוטים מתקדמים</p><p className="text-sm font-semibold">{profile?.full_name || session.user.email} · {profile?.role === 'manager' ? 'מנהל' : 'עובד'}</p></div><button type="button" onClick={() => createClient().auth.signOut()} className="flex size-10 items-center justify-center rounded-xl hover:bg-muted" aria-label="התנתקות"><LogOut className="size-5" /></button></header>{activeReport ? <ReportForm key={activeReport.id} initialReport={activeReport} isNew={isNew} onCancel={closeReport} onSave={saveReport} onAutosave={(draft) => saveReport(draft, false)} /> : <><ReportList reports={reports.length ? reports : SAMPLE_REPORTS} onCreate={() => openReport(createEmptyReport(reports), true)} onOpen={(report) => openReport(report, false)} /><div className="px-4 pb-6"><p className="mb-3 text-xs text-muted-foreground">הדוחות המוצגים ללא התחברות למסד הנתונים מסומנים כדוגמה.</p>{profile?.role === 'manager' && <ManagerInvite />}{message && <p role="status" className="mt-3 rounded-xl bg-success-soft px-3 py-3 text-sm text-success">{message}</p>}</div></>}</div>
+  return <div className="mx-auto min-h-dvh w-full max-w-md bg-background"><header className="flex items-center justify-between border-b border-border bg-card px-4 py-3"><div><p className="text-xs font-bold text-primary">שארק רובוטים מתקדמים</p><p className="text-sm font-semibold">{profile?.full_name || session.user.email} · {profile?.role === 'manager' ? 'מנהל' : 'עובד'}</p></div><button type="button" onClick={() => createClient().auth.signOut()} className="flex size-10 items-center justify-center rounded-xl hover:bg-muted" aria-label="התנתקות"><LogOut className="size-5" /></button></header>{activeReport ? <ReportForm key={activeReport.id} initialReport={activeReport} isNew={isNew} onCancel={closeReport} onSave={saveReport} onAutosave={(draft) => saveReport(draft, false)} /> : <><ReportList reports={reports.length ? reports : SAMPLE_REPORTS} onCreate={() => openReport(createEmptyReport(reports), true)} onOpen={(report) => openReport(report, false)} canDelete={profile?.role === 'manager' && reports.length > 0} onDelete={deleteReport} /><div className="px-4 pb-6"><p className="mb-3 text-xs text-muted-foreground">הדוחות המוצגים ללא התחברות למסד הנתונים מסומנים כדוגמה.</p>{profile?.role === 'manager' && <ManagerInvite />}{message && <p role="status" className="mt-3 rounded-xl bg-success-soft px-3 py-3 text-sm text-success">{message}</p>}</div></>}</div>
 }
 
 function fromDatabase(row: any, mediaRows: any[] = []): Report {

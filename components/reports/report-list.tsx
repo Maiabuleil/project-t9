@@ -1,7 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { CalendarDays, ChevronLeft, FilePlus2, HardHat, Search, X } from 'lucide-react'
+import { CalendarDays, ChevronLeft, FilePlus2, HardHat, Search, Trash2, X } from 'lucide-react'
 import type { Report } from '@/lib/types'
 import { formatDate } from '@/lib/report-utils'
 import { StatusBadge } from './status-badge'
@@ -10,9 +10,11 @@ type ReportListProps = {
   reports: Report[]
   onCreate: () => void
   onOpen: (report: Report) => void
+  canDelete?: boolean
+  onDelete?: (report: Report) => void
 }
 
-export function ReportList({ reports, onCreate, onOpen }: ReportListProps) {
+export function ReportList({ reports, onCreate, onOpen, canDelete = false, onDelete }: ReportListProps) {
   const [query, setQuery] = useState('')
 
   const filtered = useMemo(() => {
@@ -90,7 +92,7 @@ export function ReportList({ reports, onCreate, onOpen }: ReportListProps) {
           <ul className="flex flex-col gap-3">
             {filtered.map((report) => (
               <li key={report.id}>
-                <ReportCard report={report} onOpen={() => onOpen(report)} />
+                <ReportCard report={report} onOpen={() => onOpen(report)} canDelete={canDelete} onDelete={onDelete} />
               </li>
             ))}
           </ul>
@@ -100,7 +102,7 @@ export function ReportList({ reports, onCreate, onOpen }: ReportListProps) {
   )
 }
 
-function ReportCard({ report, onOpen }: { report: Report; onOpen: () => void }) {
+function ReportCard({ report, onOpen, canDelete, onDelete }: { report: Report; onOpen: () => void; canDelete: boolean; onDelete?: (report: Report) => void }) {
   const { details } = report
   const unit = [
     `דירה ${details.apartment || '—'}`,
@@ -111,11 +113,12 @@ function ReportCard({ report, onOpen }: { report: Report; onOpen: () => void }) 
     .join(' · ')
 
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="flex w-full items-center gap-3 rounded-2xl border border-border bg-card p-4 text-start transition-colors hover:border-primary/40 active:bg-muted focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring/30"
-    >
+    <div className="flex w-full items-center gap-3 rounded-2xl border border-border bg-card p-4 text-start transition-colors hover:border-primary/40">
+      <button
+        type="button"
+        onClick={onOpen}
+        className="flex min-w-0 flex-1 items-center gap-3 text-start focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring/30"
+      >
       <div className="flex min-w-0 flex-1 flex-col gap-2">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
@@ -136,7 +139,20 @@ function ReportCard({ report, onOpen }: { report: Report; onOpen: () => void }) 
           <span className="ms-auto font-mono text-xs">#{details.reportNumber}</span>
         </div>
       </div>
-      <ChevronLeft className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
-    </button>
+        <ChevronLeft className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+      </button>
+      {canDelete && (
+        <button
+          type="button"
+          aria-label={`מחיקת דוח ${details.address || details.apartment}`}
+          onClick={() => {
+            if (window.confirm(`האם למחוק את הדוח עבור ${details.address || 'כתובת לא הוזנה'}, דירה ${details.apartment || '—'}?`)) onDelete?.(report)
+          }}
+          className="flex size-11 shrink-0 items-center justify-center rounded-xl text-destructive hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring/30"
+        >
+          <Trash2 className="size-5" aria-hidden="true" />
+        </button>
+      )}
+    </div>
   )
 }
