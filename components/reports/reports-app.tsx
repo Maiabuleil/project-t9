@@ -46,11 +46,16 @@ export function ReportsApp() {
       }
       const reportRows = rows ?? []
       const reportIds = reportRows.map((row: any) => row.id)
-      const { data: mediaRows } = reportIds.length
+      const { data: mediaRows, error: mediaError } = reportIds.length
         ? await supabase.from('media_assets').select('id, report_id, inspection_id, storage_path, kind, phase, file_name, location, note').in('report_id', reportIds)
-        : { data: [] as any[] }
+        : { data: [] as any[], error: null }
+      if (mediaError) {
+        console.error('Loading report media failed', mediaError)
+        setMessage('טעינת התמונות נכשלה. בדקו את החיבור ונסו שוב.')
+      }
       const mediaWithUrls = await Promise.all((mediaRows ?? []).map(async (media: any) => {
-        const { data } = await supabase.storage.from('report-media').createSignedUrl(media.storage_path, 3600)
+        const { data, error } = await supabase.storage.from('report-media').createSignedUrl(media.storage_path, 3600)
+        if (error) console.error('Loading stored image failed', media.storage_path, error)
         return { ...media, url: data?.signedUrl ?? '' }
       }))
       setProfile(currentProfile)
@@ -101,13 +106,20 @@ export function ReportsApp() {
     // Persist findings before media so a media upload failure never loses them.
     await supabase.from('findings').delete().eq('report_id', saved.id)
     if (report.findings.length) await supabase.from('findings').insert(report.findings.map((finding) => ({ report_id: saved.id, location: finding.location, description: finding.description, severity: finding.severity, recommendation: finding.recommendation })))
-    // Remove media rows/files that were deleted from already-saved media (those without a pending File).
-    const { data: previousMedia } = await supabase.from('media_assets').select('id, storage_path').eq('report_id', saved.id)
-    const keptMediaIds = new Set(report.inspections.flatMap((inspection) => inspection.media.filter((media) => !media.file).map((media) => media.id)))
-    const removedMedia = (previousMedia ?? []).filter((media: any) => !keptMediaIds.has(media.id))
-    if (removedMedia.length) {
-      await supabase.storage.from('report-media').remove(removedMedia.map((media: any) => media.storage_path))
-      await supabase.from('media_assets').delete().in('id', removedMedia.map((media: any) => media.id))
+    // Autosave can hold an older form snapshot while another save uploads media.
+    // Never infer deletion from a missing item in that snapshot: it can delete a newly uploaded file.
+    // Only the explicit save action may reconcile removed, previously persisted files.
+    if (close && !report.inspections.some((inspection) => inspection.media.some((media) => media.file))) {
+      const { data: previousMedia, error: previousMediaError } = await supabase.from('media_assets').select('id, storage_path').eq('report_id', saved.id)
+      if (previousMediaError) { console.error('Reading stored media failed', previousMediaError); setMessage('בדיקת התמונות הקיימות נכשלה. נסו שוב.'); return }
+      const keptMediaIds = new Set(report.inspections.flatMap((inspection) => inspection.media.filter((media) => !media.file).map((media) => media.id)))
+      const removedMedia = (previousMedia ?? []).filter((media: any) => !keptMediaIds.has(media.id))
+      for (const media of removedMedia) {
+        const { error: removalError } = await supabase.storage.from('report-media').remove([media.storage_path])
+        if (removalError) { console.error('Removing stored media failed', removalError); setMessage('מחיקת תמונה נכשלה. נסו שוב.'); return }
+        const { error: rowError } = await supabase.from('media_assets').delete().eq('id', media.id)
+        if (rowError) { console.error('Removing media record failed', rowError); setMessage('עדכון התמונות נכשל. נסו שוב.'); return }
+      }
     }
     // Upload each pending file. On failure keep the item pending so it can be retried from the same report without duplicating already-uploaded files.
     const failedNames: string[] = []

@@ -26,16 +26,18 @@ export function ReportForm({ initialReport, isNew, onCancel, onSave, onAutosave 
   const [progress, setProgress] = useState<SaveProgress | null>(null)
   // Skips the autosave that a saved-result adoption would otherwise trigger, preventing a save loop.
   const skipNextAutosave = useRef(false)
+  const autosaveCallback = useRef(onAutosave)
+  autosaveCallback.current = onAutosave
 
   useEffect(() => {
-    if (!onAutosave) return
+    if (!autosaveCallback.current || isSaving) return
     if (skipNextAutosave.current) { skipNextAutosave.current = false; return }
     const timer = window.setTimeout(async () => {
-      const result = await onAutosave({ ...report, status: 'draft' })
+      const result = await autosaveCallback.current?.({ ...report, status: 'draft' })
       if (result) { skipNextAutosave.current = true; setReport(result) }
     }, 1200)
     return () => window.clearTimeout(timer)
-  }, [report, onAutosave])
+  }, [report, isSaving])
 
   function updateDetails(details: ReportDetails) {
     setReport((prev) => ({ ...prev, details }))
