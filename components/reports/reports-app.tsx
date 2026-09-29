@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { LogOut, UserPlus } from 'lucide-react'
 import { SAMPLE_REPORTS } from '@/lib/sample-data'
 import { createEmptyReport } from '@/lib/report-utils'
-import type { Report } from '@/lib/types'
+import type { Inspection, MediaItem, Report } from '@/lib/types'
 import { createClient } from '@/lib/supabase/client'
 import { ReportList } from './report-list'
 import { ReportForm } from './report-form'
@@ -75,12 +75,15 @@ export function ReportsApp() {
     setMessage('הדוח נמחק בהצלחה.')
   }
 
-  async function saveReport(report: Report, close = true) {
+  async function saveReport(report: Report, close = true): Promise<Report | void> {
     setMessage('')
     const supabase = createClient()
-    const { data: saved, error } = await supabase.from('reports').upsert({ id: report.id, owner_id: session.user.id, status: report.status, project: report.details.project, report_number: report.details.reportNumber, address: report.details.address, building: report.details.building, apartment: report.details.apartment, floor: report.details.floor, client_name: report.details.clientName, inspector: report.details.inspector, report_date: report.details.date || null, updated_at: new Date().toISOString() }).select('id').single()
+    const basePayload = { id: report.id, owner_id: session.user.id, status: report.status, project: report.details.project, address: report.details.address, building: report.details.building, apartment: report.details.apartment, floor: report.details.floor, client_name: report.details.clientName, inspector: report.details.inspector, report_date: report.details.date || null, updated_at: new Date().toISOString() }
+    // Omit report_number for brand-new reports so the database sequence assigns a unique number (safe under concurrency).
+    const payload = report.details.reportNumber ? { ...basePayload, report_number: report.details.reportNumber } : basePayload
+    const { data: saved, error } = await supabase.from('reports').upsert(payload).select('id, report_number').single()
     if (error || !saved) { setMessage('שמירת הדוח נכשלה. בדקו את החיבור ונסו שוב.'); return }
-    const isFilled = (inspection: Report['inspections'][number]) => inspection.result !== null || inspection.note.trim() !== '' || inspection.media.length > 0
+    const isFilled = (inspection: Inspection) => inspection.result !== null || inspection.note.trim() !== '' || inspection.media.length > 0
     const filledInspections = report.inspections.filter(isFilled)
     const emptyKeys = report.inspections.filter((inspection) => !isFilled(inspection)).map((inspection) => inspection.id)
     if (emptyKeys.length) await supabase.from('inspections').delete().eq('report_id', saved.id).in('inspection_key', emptyKeys)
@@ -91,28 +94,43 @@ export function ReportsApp() {
       savedInspections = upserted ?? []
     }
     const inspectionIds = new Map(savedInspections.map((item) => [item.inspection_key, item.id]))
+    // Persist findings before media so a media upload failure never loses them.
+    await supabase.from('findings').delete().eq('report_id', saved.id)
+    if (report.findings.length) await supabase.from('findings').insert(report.findings.map((finding) => ({ report_id: saved.id, location: finding.location, description: finding.description, severity: finding.severity, recommendation: finding.recommendation })))
+    // Remove media rows/files that were deleted from already-saved media (those without a pending File).
     const { data: previousMedia } = await supabase.from('media_assets').select('id, storage_path').eq('report_id', saved.id)
     const keptMediaIds = new Set(report.inspections.flatMap((inspection) => inspection.media.filter((media) => !media.file).map((media) => media.id)))
     const removedMedia = (previousMedia ?? []).filter((media: any) => !keptMediaIds.has(media.id))
-    for (const media of removedMedia) await supabase.storage.from('report-media').remove([media.storage_path])
-    if (removedMedia.length) await supabase.from('media_assets').delete().in('id', removedMedia.map((media: any) => media.id))
-    for (const inspection of report.inspections) for (const media of inspection.media) if (media.file) {
-      const path = `${session.user.id}/${saved.id}/${media.id}-${media.name}`
-      const inspectionId = inspectionIds.get(inspection.id)
-      const { error: mediaError } = await supabase.from('media_assets').insert({ report_id: saved.id, inspection_id: inspectionId, user_id: session.user.id, storage_path: path, kind: media.kind, phase: media.phase, file_name: media.name, location: media.location, note: media.note })
-      if (mediaError) { setMessage('הדוח נשמר, אך שמירת פרטי המדיה נכשלה.'); return }
-      const upload = await supabase.storage.from('report-media').upload(path, media.file, { upsert: true, contentType: media.file.type })
-      if (upload.error) {
-        await supabase.from('media_assets').delete().eq('storage_path', path)
-        setMessage('הדוח נשמר, אך העלאת אחד מקובצי המדיה נכשלה.')
-        return
-      }
+    if (removedMedia.length) {
+      await supabase.storage.from('report-media').remove(removedMedia.map((media: any) => media.storage_path))
+      await supabase.from('media_assets').delete().in('id', removedMedia.map((media: any) => media.id))
     }
-    await supabase.from('findings').delete().eq('report_id', saved.id)
-    if (report.findings.length) await supabase.from('findings').insert(report.findings.map((finding) => ({ report_id: saved.id, location: finding.location, description: finding.description, severity: finding.severity, recommendation: finding.recommendation })))
-    setReports((prev) => prev.some((item) => item.id === report.id) ? prev.map((item) => item.id === report.id ? report : item) : [report, ...prev])
+    // Upload each pending file. On failure keep the item pending so it can be retried from the same report without duplicating already-uploaded files.
+    const failedNames: string[] = []
+    const persistedInspections: Inspection[] = []
+    for (const inspection of report.inspections) {
+      const nextMedia: MediaItem[] = []
+      for (const media of inspection.media) {
+        if (!media.file) { nextMedia.push(media); continue }
+        const path = `${session.user.id}/${saved.id}/${media.id}-${media.name}`
+        const upload = await supabase.storage.from('report-media').upload(path, media.file, { upsert: true, contentType: media.file.type })
+        if (upload.error) { failedNames.push(media.name); nextMedia.push(media); continue }
+        const { data: insertedMedia, error: mediaError } = await supabase.from('media_assets').insert({ report_id: saved.id, inspection_id: inspectionIds.get(inspection.id) ?? null, user_id: session.user.id, storage_path: path, kind: media.kind, phase: media.phase, file_name: media.name, location: media.location, note: media.note }).select('id').single()
+        if (mediaError || !insertedMedia) { await supabase.storage.from('report-media').remove([path]); failedNames.push(media.name); nextMedia.push(media); continue }
+        const { data: signed } = await supabase.storage.from('report-media').createSignedUrl(path, 3600)
+        nextMedia.push({ id: insertedMedia.id, url: signed?.signedUrl ?? '', kind: media.kind, name: media.name, phase: media.phase, location: media.location, note: media.note, storagePath: path })
+      }
+      persistedInspections.push({ ...inspection, media: nextMedia })
+    }
+    const persisted: Report = { ...report, details: { ...report.details, reportNumber: saved.report_number ?? report.details.reportNumber }, inspections: persistedInspections }
+    setReports((prev) => prev.some((item) => item.id === persisted.id) ? prev.map((item) => item.id === persisted.id ? persisted : item) : [persisted, ...prev])
+    if (failedNames.length) {
+      setMessage(`הדוח נשמר, אך העלאת הקבצים הבאים נכשלה: ${failedNames.join(', ')}. הקבצים שהצליחו נשמרו. ניתן לנסות להעלות את הנותרים שוב מתוך אותו דוח.`)
+      return persisted
+    }
     setMessage('הדוח נשמר בהצלחה.')
     if (close) closeReport()
+    return persisted
   }
 
   return <div className="mx-auto min-h-dvh w-full max-w-md bg-background"><header className="flex items-center justify-between border-b border-border bg-card px-4 py-3"><div><p className="text-xs font-bold text-primary">שארק רובוטים מתקדמים</p><p className="text-sm font-semibold">{profile?.full_name || session.user.email} · {profile?.role === 'manager' ? 'מנהל' : 'עובד'}</p></div><button type="button" onClick={() => createClient().auth.signOut()} className="flex size-10 items-center justify-center rounded-xl hover:bg-muted" aria-label="התנתקות"><LogOut className="size-5" /></button></header>{activeReport ? <ReportForm key={activeReport.id} initialReport={activeReport} isNew={isNew} onCancel={closeReport} onSave={saveReport} onAutosave={(draft) => saveReport(draft, false)} /> : <><ReportList reports={reports.length ? reports : SAMPLE_REPORTS} onCreate={() => openReport(createEmptyReport(reports), true)} onOpen={(report) => openReport(report, false)} canDelete={profile?.role === 'manager' && reports.length > 0} onDelete={deleteReport} /><div className="px-4 pb-6"><p className="mb-3 text-xs text-muted-foreground">הדוחות המוצגים ללא התחברות למסד הנתונים מסומנים כדוגמה.</p>{profile?.role === 'manager' && <ManagerInvite />}{message && <p role="status" className="mt-3 rounded-xl bg-success-soft px-3 py-3 text-sm text-success">{message}</p>}</div></>}</div>

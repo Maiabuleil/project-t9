@@ -85,18 +85,14 @@ export function createEmptyInspections(): Inspection[] {
   return INSPECTION_ORDER.map((id) => ({ id, result: null, note: '', media: [] }))
 }
 
-export function createEmptyReport(existing: Report[]): Report {
-  const maxNumber = existing.reduce((max, r) => {
-    const n = Number.parseInt(r.details.reportNumber.replace(/\D/g, ''), 10)
-    return Number.isNaN(n) ? max : Math.max(max, n)
-  }, 1000)
-
+export function createEmptyReport(_existing: Report[]): Report {
   return {
     id: createId(),
     status: 'draft',
     details: {
       project: '',
-      reportNumber: String(maxNumber + 1),
+      // Left empty on purpose: the database sequence assigns a unique report number on first save.
+      reportNumber: '',
       address: '',
       building: '',
       apartment: '',
