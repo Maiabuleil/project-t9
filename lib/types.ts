@@ -18,7 +18,7 @@ export type MediaItem = {
   storagePath?: string
 }
 
-export type InspectionId = 'flushing' | 'flood' | 'camera'
+export type InspectionId = 'flushing' | 'flood' | 'camera' | 'ac-line'
 
 export type Inspection = {
   id: InspectionId

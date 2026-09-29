@@ -1,6 +1,6 @@
 'use client'
 
-import { CircleCheck, CircleX, Droplets, ScanEye, Waves } from 'lucide-react'
+import { AirVent, CircleCheck, CircleX, Droplets, ScanEye, Waves } from 'lucide-react'
 import type { CheckResult, Inspection, InspectionId } from '@/lib/types'
 import { INSPECTION_META } from '@/lib/report-utils'
 import { cn } from '@/lib/utils'
@@ -11,6 +11,7 @@ const ICONS: Record<InspectionId, typeof Droplets> = {
   flushing: Droplets,
   flood: Waves,
   camera: ScanEye,
+  'ac-line': AirVent,
 }
 
 type InspectionCardProps = {
