@@ -129,7 +129,18 @@ export function ReportsApp() {
     for (const inspection of report.inspections) {
       const nextMedia: MediaItem[] = []
       for (const media of inspection.media) {
-        if (!media.file) { nextMedia.push(media); continue }
+        if (!media.file) {
+          // Existing files still need their editable metadata persisted.
+          const { data: updatedMedia, error: updateError } = await supabase.from('media_assets')
+            .update({ location: media.location, note: media.note, phase: media.phase })
+            .eq('id', media.id).eq('report_id', saved.id).select('id').single()
+          if (updateError || !updatedMedia) {
+            console.error('Updating media details failed', media.id, updateError)
+            failedNames.push(media.name)
+          }
+          nextMedia.push(media)
+          continue
+        }
         // Build a Supabase-safe storage key: raw device filenames often contain Hebrew, spaces, or symbols that Storage rejects as an "Invalid key", which fails the upload. The random media.id keeps the key unique; the human-readable name stays in the file_name column.
         const rawExt = media.name.includes('.') ? media.name.split('.').pop() ?? '' : ''
         const safeExt = rawExt.replace(/[^a-zA-Z0-9]/g, '').toLowerCase().slice(0, 8)
@@ -160,7 +171,7 @@ export function ReportsApp() {
     const persisted: Report = { ...report, details: { ...report.details, reportNumber: saved.report_number ?? report.details.reportNumber }, inspections: persistedInspections }
     setReports((prev) => prev.some((item) => item.id === persisted.id) ? prev.map((item) => item.id === persisted.id ? persisted : item) : [persisted, ...prev])
     if (failedNames.length) {
-      setMessage(`הדוח נשמר, אך העלאת הקבצים הבאים נכשלה: ${failedNames.join(', ')}. הקבצים שהצליחו נשמרו. ניתן לנסות להעלות את הנותרים שוב מתוך אותו דוח.`)
+      setMessage(`הדוח נשמר, אך העלאה או שמירת פרטי הקבצים הבאים נכשלה: ${failedNames.join(', ')}. נסו לשמור שוב לפני רענון הדף.`)
       return persisted
     }
     setMessage('הדוח נשמר בהצלחה.')
