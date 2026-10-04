@@ -29,15 +29,27 @@ export function ReportForm({ initialReport, isNew, onCancel, onSave, onAutosave 
   const autosaveCallback = useRef(onAutosave)
   autosaveCallback.current = onAutosave
 
-  useEffect(() => {
-    if (!autosaveCallback.current || isSaving) return
-    if (skipNextAutosave.current) { skipNextAutosave.current = false; return }
-    const timer = window.setTimeout(async () => {
-      const result = await autosaveCallback.current?.({ ...report, status: 'draft' })
-      if (result) { skipNextAutosave.current = true; setReport(result) }
-    }, 1200)
-    return () => window.clearTimeout(timer)
-  }, [report, isSaving])
+useEffect(() => {
+  if (!autosaveCallback.current || isSaving) return
+
+  if (skipNextAutosave.current) {
+    skipNextAutosave.current = false
+    return
+  }
+
+  const timer = window.setTimeout(() => {
+    // Save the current snapshot in the background.
+    // IMPORTANT: do not replace the local form state with the result,
+    // because the user may have continued typing while the request
+    // was being processed.
+    void autosaveCallback.current?.({
+      ...report,
+      status: 'draft',
+    })
+  }, 1500)
+
+  return () => window.clearTimeout(timer)
+}, [report, isSaving])
 
   function updateDetails(details: ReportDetails) {
     setReport((prev) => ({ ...prev, details }))
