@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client'
 import type { InspectionId, MediaItem, Report } from '@/lib/types'
 import { INSPECTION_ORDER } from '@/lib/report-utils'
 import { createClient } from '@/lib/supabase/client'
-import { PAGE_HEIGHT, PAGE_WIDTH, PDF_INSPECTION_LABELS, ReportPdfPages, type PdfData, type PdfPhoto, type PdfPhotoPair } from './report-pdf-pages'
+import { PAGE_HEIGHT, PAGE_WIDTH, PDF_INSPECTION_LABELS, PDF_LAYOUT, ReportPdfPages, type PdfData, type PdfPhoto, type PdfPhotoPair } from './report-pdf-pages'
 
 export type PdfProgress = { step: string; done: number; total: number }
 
@@ -45,9 +45,11 @@ export async function exportReport(report: Report, onProgress?: (progress: PdfPr
   return { missingPhotos }
 }
 
+type LoadedImage = { dataUrl: string; width: number; height: number }
+
 // Pages are laid out as HTML (so Hebrew and right-to-left text render correctly), captured as images and placed on A4 pages.
-// Photos and logos are NOT part of that capture: Safari often drops images when capturing a page this way,
-// which left the PDF without photos. They are drawn straight into the PDF at their measured positions instead.
+// Logos, the watermark and photos are NOT in that HTML: iPhone Safari drops or mis-measures images when capturing
+// a page, which left the PDF without photos. They are drawn straight into the PDF at the fixed PDF_LAYOUT positions.
 async function buildReportPdf(report: Report, onProgress?: (progress: PdfProgress) => void): Promise<{ pdf: Blob; missingPhotos: number }> {
   const [{ jsPDF }, { toJpeg }] = await Promise.all([import('jspdf'), import('html-to-image')])
 
@@ -61,11 +63,11 @@ async function buildReportPdf(report: Report, onProgress?: (progress: PdfProgres
     loadImage('/report/watermark.png', 900, 'image/png'),
   ])
 
-  const photoSources = new Map<string, string>()
+  const photoImages = new Map<string, LoadedImage>()
   let missingPhotos = 0
-  await runLimited(photos, 3, async (item) => {
+  await runLimited(photos, 2, async (item) => {
     try {
-      photoSources.set(item.id, await loadImage(await resolveMediaUrl(item), MAX_PHOTO_SIDE, 'image/jpeg'))
+      photoImages.set(item.id, await loadImage(await resolveMediaUrl(item), MAX_PHOTO_SIDE, 'image/jpeg'))
     } catch (error) {
       console.error('Loading photo for PDF failed', item.name, error)
       missingPhotos += 1
@@ -74,7 +76,7 @@ async function buildReportPdf(report: Report, onProgress?: (progress: PdfProgres
     onProgress?.({ step: 'טוען תמונות', done: loaded, total: photos.length })
   })
 
-  const data = buildPdfData(report, photoSources, { logo, association, watermark })
+  const data = buildPdfData(report, photoImages)
 
   const container = document.createElement('div')
   container.setAttribute('aria-hidden', 'true')
@@ -83,32 +85,42 @@ async function buildReportPdf(report: Report, onProgress?: (progress: PdfProgres
   const root = createRoot(container)
   try {
     flushSync(() => root.render(<ReportPdfPages data={data} />))
-    await Promise.all(Array.from(container.querySelectorAll('img')).map((img) => img.decode().catch(() => undefined)))
 
     const pages = Array.from(container.querySelectorAll<HTMLElement>('[data-pdf-page]'))
     const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true })
     const GState = (pdf as unknown as { GState: new (options: { opacity: number }) => unknown }).GState
-    const mmPerPx = 210 / PAGE_WIDTH
-    const withoutImages = (node: HTMLElement) => !(node instanceof HTMLImageElement && node.dataset.pdfImage !== undefined)
+    const mm = (px: number) => (px * 210) / PAGE_WIDTH
+    // The alias makes jsPDF embed a repeated image (logos, watermark) only once.
+    const draw = (image: LoadedImage, alias: string, x: number, y: number, width: number, height: number) =>
+      pdf.addImage(image.dataUrl, image.dataUrl.startsWith('data:image/png') ? 'PNG' : 'JPEG', mm(x), mm(y), mm(width), mm(height), alias, 'FAST')
+
     for (const [index, page] of pages.entries()) {
       onProgress?.({ step: 'יוצר עמודים', done: index, total: pages.length })
-      const text = await toJpeg(page, { width: PAGE_WIDTH, height: PAGE_HEIGHT, pixelRatio: CAPTURE_PIXEL_RATIO, quality: 0.85, backgroundColor: '#FFFFFF', skipFonts: true, cacheBust: false, filter: withoutImages })
+      const text = await toJpeg(page, { width: PAGE_WIDTH, height: PAGE_HEIGHT, pixelRatio: CAPTURE_PIXEL_RATIO, quality: 0.85, backgroundColor: '#FFFFFF', skipFonts: true, cacheBust: false })
       if (index > 0) pdf.addPage()
       pdf.addImage(text, 'JPEG', 0, 0, 210, 297, undefined, 'FAST')
 
-      const pageBox = page.getBoundingClientRect()
-      for (const img of Array.from(page.querySelectorAll<HTMLImageElement>('img[data-pdf-image]'))) {
-        const src = img.getAttribute('src') ?? ''
-        const box = img.getBoundingClientRect()
-        if (!src.startsWith('data:image/') || box.width === 0 || box.height === 0) continue
-        const opacity = Number(img.dataset.opacity ?? '1')
-        if (opacity < 1) {
-          pdf.saveGraphicsState()
-          pdf.setGState(new GState({ opacity }) as Parameters<typeof pdf.setGState>[0])
-        }
-        // The alias lets jsPDF embed a repeated image (logos, watermark) only once.
-        pdf.addImage(src, src.startsWith('data:image/png') ? 'PNG' : 'JPEG', (box.left - pageBox.left) * mmPerPx, (box.top - pageBox.top) * mmPerPx, box.width * mmPerPx, box.height * mmPerPx, img.dataset.pdfImage || undefined, 'FAST')
-        if (opacity < 1) pdf.restoreGraphicsState()
+      const { watermark: wm, logo: lg, association: as, photos: slots } = PDF_LAYOUT
+      pdf.saveGraphicsState()
+      pdf.setGState(new GState({ opacity: wm.opacity }) as Parameters<typeof pdf.setGState>[0])
+      draw(watermark, 'watermark', wm.x, wm.y, wm.width, (wm.width * watermark.height) / watermark.width)
+      pdf.restoreGraphicsState()
+      const logoWidth = (lg.height * logo.width) / logo.height
+      draw(logo, 'logo', lg.centerX - logoWidth / 2, lg.y, logoWidth, lg.height)
+      draw(association, 'association', as.x, as.y, as.width, (as.width * association.height) / association.width)
+
+      const pair = data.photoPairs[Number(page.dataset.photoPair ?? '-1')]
+      if (!pair) continue
+      for (const side of ['before', 'after'] as const) {
+        const photo = pair[side]
+        const image = photo && photoImages.get(photo.id)
+        if (!image) continue
+        // Fit the photo inside its frame without stretching, centred.
+        const slot = slots[side]
+        const scale = Math.min(slot.width / image.width, slot.height / image.height)
+        const width = image.width * scale
+        const height = image.height * scale
+        draw(image, `photo-${photo.id}`, slot.x + (slot.width - width) / 2, slot.y + (slot.height - height) / 2, width, height)
       }
     }
     onProgress?.({ step: 'שומר', done: pages.length, total: pages.length })
@@ -120,7 +132,7 @@ async function buildReportPdf(report: Report, onProgress?: (progress: PdfProgres
   }
 }
 
-function buildPdfData(report: Report, photoSources: Map<string, string>, assets: PdfData['assets']): PdfData {
+function buildPdfData(report: Report, photoImages: Map<string, LoadedImage>): PdfData {
   const { details } = report
   const unit = [details.building && `בניין ${details.building}`, details.floor && `קומה ${details.floor}`, details.apartment && `דירה ${details.apartment}`].filter(Boolean).join('  ')
 
@@ -136,7 +148,7 @@ function buildPdfData(report: Report, photoSources: Map<string, string>, assets:
   const photoPairs: PdfPhotoPair[] = []
   for (const inspection of ordered) {
     const toPhoto = (item: MediaItem): PdfPhoto => {
-      return { src: photoSources.get(item.id) ?? '', caption: item.location, note: item.note, id: item.id }
+      return { id: item.id, loaded: photoImages.has(item.id), caption: item.location, note: item.note }
     }
     const before = inspection.media.filter((item) => item.kind === 'image' && item.phase === 'before').map(toPhoto)
     const after = inspection.media.filter((item) => item.kind === 'image' && item.phase === 'after').map(toPhoto)
@@ -155,7 +167,6 @@ function buildPdfData(report: Report, photoSources: Map<string, string>, assets:
     inspector: details.inspector,
     results,
     photoPairs,
-    assets,
   }
 }
 
@@ -169,7 +180,7 @@ async function resolveMediaUrl(item: MediaItem): Promise<string> {
 // Loads an image and re-encodes it as a data URL scaled to maxSide.
 // Decoding through an <img> element works in every browser (including formats only Safari can read) and
 // applies the photo's camera rotation, unlike createImageBitmap options that some browsers reject.
-async function loadImage(url: string, maxSide: number, type: 'image/jpeg' | 'image/png'): Promise<string> {
+async function loadImage(url: string, maxSide: number, type: 'image/jpeg' | 'image/png'): Promise<LoadedImage> {
   let objectUrl: string | null = null
   let img: HTMLImageElement
   try {
@@ -198,12 +209,13 @@ async function loadImage(url: string, maxSide: number, type: 'image/jpeg' | 'ima
     }
     context.drawImage(img, 0, 0, canvas.width, canvas.height)
     const dataUrl = canvas.toDataURL(type, 0.85)
+    const size = { width: canvas.width, height: canvas.height }
     // Free the canvas right away: iPhones cap total canvas memory, and once it is used up every further
     // photo comes back empty.
     canvas.width = 0
     canvas.height = 0
     if (!dataUrl.startsWith(`data:${type}`)) throw new Error('could not encode image')
-    return dataUrl
+    return { dataUrl, ...size }
   } finally {
     if (objectUrl) URL.revokeObjectURL(objectUrl)
     img.src = ''
