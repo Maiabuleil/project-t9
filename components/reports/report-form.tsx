@@ -10,6 +10,7 @@ import { DetailsSection } from './details-section'
 import { InspectionCard } from './inspection-card'
 import { FindingsSection } from './findings-section'
 import { FormSection } from './fields'
+import { PdfButton } from './pdf-button'
 
 type ReportFormProps = {
   initialReport: Report
@@ -172,6 +173,14 @@ export function ReportForm({ initialReport, isNew, onCancel, onSave, onAutosave,
         </FormSection>
 
         <FindingsSection findings={report.findings} onChange={updateFindings} />
+
+        <section aria-labelledby="pdf-heading" className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-4">
+          <div className="flex flex-col gap-0.5">
+            <h2 id="pdf-heading" className="text-lg font-bold">הפקת דוח PDF</h2>
+            <p className="text-sm leading-relaxed text-muted-foreground">דוח מלא לפי התבנית של שארק: פרטי הלקוח והכתובת, תוצאות הבדיקות וכל תמונות לפני ואחרי.</p>
+          </div>
+          <PdfButton report={report} className="h-14 text-base" />
+        </section>
       </main>
 
       <footer className="sticky bottom-0 z-20 flex flex-col gap-2 border-t border-border bg-card px-4 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-3">

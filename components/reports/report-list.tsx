@@ -5,6 +5,7 @@ import { CalendarDays, ChevronLeft, FilePlus2, HardHat, Search, Trash2, X } from
 import type { Report } from '@/lib/types'
 import { formatDate } from '@/lib/report-utils'
 import { StatusBadge } from './status-badge'
+import { PdfButton } from './pdf-button'
 
 type ReportListProps = {
   reports: Report[]
@@ -141,6 +142,7 @@ function ReportCard({ report, onOpen, canDelete, onDelete }: { report: Report; o
       </div>
         <ChevronLeft className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
       </button>
+      <PdfButton report={report} variant="icon" />
       {canDelete && (
         <button
           type="button"
