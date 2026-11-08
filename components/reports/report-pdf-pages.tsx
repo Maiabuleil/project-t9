@@ -16,7 +16,8 @@ const FONT = 'Arial, "Segoe UI", "Noto Sans Hebrew", sans-serif'
 
 export type PdfAssets = { logo: string; association: string; watermark: string }
 
-export type PdfPhoto = { src: string; caption: string; note: string }
+// `src` is empty when the photo could not be loaded; the PDF then shows a labelled placeholder.
+export type PdfPhoto = { id: string; src: string; caption: string; note: string }
 
 export type PdfPhotoPair = { before: PdfPhoto | null; after: PdfPhoto | null }
 
@@ -74,6 +75,8 @@ function Page({ data, children }: { data: PdfData; children: ReactNode }) {
       <img
         src={data.assets.watermark}
         alt=""
+        data-pdf-image="watermark"
+        data-opacity="0.16"
         style={{ position: 'absolute', left: '50%', top: 330, width: 470, transform: 'translateX(-50%)', opacity: 0.16 }}
       />
       <Header data={data} />
@@ -95,9 +98,9 @@ function Header({ data }: { data: PdfData }) {
       </div>
       <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translateX(-50%)', textAlign: 'center' }}>
         <div style={{ color: RED, fontSize: 12, marginBottom: 4 }}>מס&apos; דוח: {data.reportNumber || '—'}</div>
-        <img src={data.assets.logo} alt="" style={{ height: 150 }} />
+        <img src={data.assets.logo} alt="" data-pdf-image="logo" style={{ height: 150 }} />
       </div>
-      <img src={data.assets.association} alt="" style={{ position: 'absolute', top: 40, left: 0, width: 175 }} />
+      <img src={data.assets.association} alt="" data-pdf-image="association" style={{ position: 'absolute', top: 40, left: 0, width: 175 }} />
     </div>
   )
 }
@@ -230,11 +233,12 @@ function PhotoPairContent({ pair }: { pair: PdfPhotoPair }) {
 function PhotoCell({ photo }: { photo: PdfPhoto | null }) {
   return (
     <td style={{ ...cell, padding: 8, verticalAlign: 'top' }}>
-      <div style={{ height: 520, display: 'flex', alignItems: 'center', justifyContent: 'center', background: photo ? '#FFFFFF' : '#F4F6F9' }}>
-        {photo ? (
-          <img src={photo.src} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+      <div style={{ height: 520, display: 'flex', alignItems: 'center', justifyContent: 'center', background: photo?.src ? '#FFFFFF' : '#F4F6F9' }}>
+        {photo?.src ? (
+          // Sized by max width/height so the element box equals the drawn photo (it is placed into the PDF by its box).
+          <img src={photo.src} alt="" data-pdf-image={`photo-${photo.id}`} style={{ display: 'block', maxWidth: '100%', maxHeight: '100%' }} />
         ) : (
-          <span style={{ color: '#7F7F7F', fontSize: 13 }}>אין תמונה</span>
+          <span style={{ color: photo ? '#C00000' : '#7F7F7F', fontSize: 13 }}>{photo ? 'התמונה לא נטענה' : 'אין תמונה'}</span>
         )}
       </div>
       <div style={{ fontSize: 13, marginTop: 8, minHeight: 18 }}>{photo ? clip(photo.caption, 70) : ''}</div>

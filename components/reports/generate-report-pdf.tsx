@@ -18,13 +18,13 @@ export function reportVideos(report: Report): { item: MediaItem; inspection: Ins
 
 // Builds the report PDF in the browser and downloads it. When the report has videos, the PDF and
 // the videos are downloaded together as one ZIP, since videos cannot be placed inside a PDF.
-export async function exportReport(report: Report, onProgress?: (progress: PdfProgress) => void): Promise<void> {
-  const pdf = await buildReportPdf(report, onProgress)
+export async function exportReport(report: Report, onProgress?: (progress: PdfProgress) => void): Promise<{ missingPhotos: number }> {
+  const { pdf, missingPhotos } = await buildReportPdf(report, onProgress)
   const baseName = reportFileBaseName(report)
   const videos = reportVideos(report)
   if (videos.length === 0) {
     saveBlob(pdf, `${baseName}.pdf`)
-    return
+    return { missingPhotos }
   }
 
   const { downloadZip } = await import('client-zip')
@@ -40,10 +40,13 @@ export async function exportReport(report: Report, onProgress?: (progress: PdfPr
   }
   onProgress?.({ step: 'יוצר ZIP', done: videos.length, total: videos.length })
   saveBlob(await downloadZip(entries).blob(), `${baseName}.zip`)
+  return { missingPhotos }
 }
 
 // Pages are laid out as HTML (so Hebrew and right-to-left text render correctly), captured as images and placed on A4 pages.
-async function buildReportPdf(report: Report, onProgress?: (progress: PdfProgress) => void): Promise<Blob> {
+// Photos and logos are NOT part of that capture: Safari often drops images when capturing a page this way,
+// which left the PDF without photos. They are drawn straight into the PDF at their measured positions instead.
+async function buildReportPdf(report: Report, onProgress?: (progress: PdfProgress) => void): Promise<{ pdf: Blob; missingPhotos: number }> {
   const [{ jsPDF }, { toJpeg }] = await Promise.all([import('jspdf'), import('html-to-image')])
 
   const photos = report.inspections.flatMap((inspection) => inspection.media.filter((item) => item.kind === 'image'))
@@ -57,11 +60,13 @@ async function buildReportPdf(report: Report, onProgress?: (progress: PdfProgres
   ])
 
   const photoSources = new Map<string, string>()
+  let missingPhotos = 0
   await runLimited(photos, 3, async (item) => {
     try {
       photoSources.set(item.id, await loadImage(await resolveMediaUrl(item), MAX_PHOTO_SIDE, 'image/jpeg'))
     } catch (error) {
       console.error('Loading photo for PDF failed', item.name, error)
+      missingPhotos += 1
     }
     loaded += 1
     onProgress?.({ step: 'טוען תמונות', done: loaded, total: photos.length })
@@ -80,15 +85,33 @@ async function buildReportPdf(report: Report, onProgress?: (progress: PdfProgres
 
     const pages = Array.from(container.querySelectorAll<HTMLElement>('[data-pdf-page]'))
     const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true })
+    const GState = (pdf as unknown as { GState: new (options: { opacity: number }) => unknown }).GState
+    const mmPerPx = 210 / PAGE_WIDTH
+    const withoutImages = (node: HTMLElement) => !(node instanceof HTMLImageElement && node.dataset.pdfImage !== undefined)
     for (const [index, page] of pages.entries()) {
       onProgress?.({ step: 'יוצר עמודים', done: index, total: pages.length })
-      const image = await toJpeg(page, { width: PAGE_WIDTH, height: PAGE_HEIGHT, pixelRatio: 2, quality: 0.85, backgroundColor: '#FFFFFF', skipFonts: true, cacheBust: false })
+      const text = await toJpeg(page, { width: PAGE_WIDTH, height: PAGE_HEIGHT, pixelRatio: 2, quality: 0.85, backgroundColor: '#FFFFFF', skipFonts: true, cacheBust: false, filter: withoutImages })
       if (index > 0) pdf.addPage()
-      pdf.addImage(image, 'JPEG', 0, 0, 210, 297, undefined, 'FAST')
+      pdf.addImage(text, 'JPEG', 0, 0, 210, 297, undefined, 'FAST')
+
+      const pageBox = page.getBoundingClientRect()
+      for (const img of Array.from(page.querySelectorAll<HTMLImageElement>('img[data-pdf-image]'))) {
+        const src = img.getAttribute('src') ?? ''
+        const box = img.getBoundingClientRect()
+        if (!src.startsWith('data:image/') || box.width === 0 || box.height === 0) continue
+        const opacity = Number(img.dataset.opacity ?? '1')
+        if (opacity < 1) {
+          pdf.saveGraphicsState()
+          pdf.setGState(new GState({ opacity }) as Parameters<typeof pdf.setGState>[0])
+        }
+        // The alias lets jsPDF embed a repeated image (logos, watermark) only once.
+        pdf.addImage(src, src.startsWith('data:image/png') ? 'PNG' : 'JPEG', (box.left - pageBox.left) * mmPerPx, (box.top - pageBox.top) * mmPerPx, box.width * mmPerPx, box.height * mmPerPx, img.dataset.pdfImage || undefined, 'FAST')
+        if (opacity < 1) pdf.restoreGraphicsState()
+      }
     }
     onProgress?.({ step: 'שומר', done: pages.length, total: pages.length })
     pdf.setProperties({ title: `דוח בדיקת קווי דלוחים ${data.reportNumber}`.trim(), author: 'שארק רובוטים מתקדמים בע"מ' })
-    return pdf.output('blob')
+    return { pdf: pdf.output('blob'), missingPhotos }
   } finally {
     root.unmount()
     container.remove()
@@ -110,12 +133,11 @@ function buildPdfData(report: Report, photoSources: Map<string, string>, assets:
 
   const photoPairs: PdfPhotoPair[] = []
   for (const inspection of ordered) {
-    const toPhoto = (item: MediaItem): PdfPhoto | null => {
-      const src = photoSources.get(item.id)
-      return src ? { src, caption: item.location, note: item.note } : null
+    const toPhoto = (item: MediaItem): PdfPhoto => {
+      return { src: photoSources.get(item.id) ?? '', caption: item.location, note: item.note, id: item.id }
     }
-    const before = inspection.media.filter((item) => item.kind === 'image' && item.phase === 'before').map(toPhoto).filter((photo) => photo !== null)
-    const after = inspection.media.filter((item) => item.kind === 'image' && item.phase === 'after').map(toPhoto).filter((photo) => photo !== null)
+    const before = inspection.media.filter((item) => item.kind === 'image' && item.phase === 'before').map(toPhoto)
+    const after = inspection.media.filter((item) => item.kind === 'image' && item.phase === 'after').map(toPhoto)
     for (let i = 0; i < Math.max(before.length, after.length); i += 1) {
       photoPairs.push({ before: before[i] ?? null, after: after[i] ?? null })
     }
@@ -142,24 +164,53 @@ async function resolveMediaUrl(item: MediaItem): Promise<string> {
   return data.signedUrl
 }
 
-// Fetches an image and re-encodes it as a data URL (scaled to maxSide), so the page capture never hits cross-origin limits.
+// Loads an image and re-encodes it as a data URL scaled to maxSide.
+// Decoding through an <img> element works in every browser (including formats only Safari can read) and
+// applies the photo's camera rotation, unlike createImageBitmap options that some browsers reject.
 async function loadImage(url: string, maxSide: number, type: 'image/jpeg' | 'image/png'): Promise<string> {
-  const response = await fetch(url)
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  const bitmap = await createImageBitmap(await response.blob(), { imageOrientation: 'from-image' })
-  const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height))
-  const canvas = document.createElement('canvas')
-  canvas.width = Math.round(bitmap.width * scale)
-  canvas.height = Math.round(bitmap.height * scale)
-  const context = canvas.getContext('2d')
-  if (!context) throw new Error('canvas unavailable')
-  if (type === 'image/jpeg') {
-    context.fillStyle = '#FFFFFF'
-    context.fillRect(0, 0, canvas.width, canvas.height)
+  let objectUrl: string | null = null
+  let img: HTMLImageElement
+  try {
+    const response = await fetch(url)
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    objectUrl = URL.createObjectURL(await response.blob())
+    img = await decodeImage(objectUrl)
+  } catch (fetchError) {
+    // Fall back to loading the address directly (e.g. when fetch is blocked) before giving up.
+    console.warn('Fetching image failed, loading it directly', url, fetchError)
+    img = await decodeImage(url, true)
   }
-  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
-  bitmap.close()
-  return canvas.toDataURL(type, 0.85)
+  try {
+    const width = img.naturalWidth
+    const height = img.naturalHeight
+    if (!width || !height) throw new Error('empty image')
+    const scale = Math.min(1, maxSide / Math.max(width, height))
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.round(width * scale)
+    canvas.height = Math.round(height * scale)
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('canvas unavailable')
+    if (type === 'image/jpeg') {
+      context.fillStyle = '#FFFFFF'
+      context.fillRect(0, 0, canvas.width, canvas.height)
+    }
+    context.drawImage(img, 0, 0, canvas.width, canvas.height)
+    const dataUrl = canvas.toDataURL(type, 0.85)
+    if (!dataUrl.startsWith(`data:${type}`)) throw new Error('could not encode image')
+    return dataUrl
+  } finally {
+    if (objectUrl) URL.revokeObjectURL(objectUrl)
+  }
+}
+
+function decodeImage(src: string, crossOrigin = false): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    if (crossOrigin) img.crossOrigin = 'anonymous'
+    img.onload = () => resolve(img)
+    img.onerror = () => reject(new Error(`could not decode image: ${src.slice(0, 80)}`))
+    img.src = src
+  })
 }
 
 async function runLimited<T>(items: T[], limit: number, task: (item: T) => Promise<void>) {

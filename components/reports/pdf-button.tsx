@@ -19,15 +19,18 @@ export function PdfButton({ report, variant = 'full', className }: PdfButtonProp
   const label = hasVideos ? 'הפקת PDF + סרטונים (ZIP)' : 'הפקת PDF'
   const [progress, setProgress] = useState<PdfProgress | null>(null)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const busy = progress !== null
 
   async function handleClick() {
     if (busy) return
     setError('')
+    setNotice('')
     setProgress({ step: 'מכין', done: 0, total: 0 })
     try {
       const { exportReport } = await import('./generate-report-pdf')
-      await exportReport(report, setProgress)
+      const { missingPhotos } = await exportReport(report, setProgress)
+      if (missingPhotos > 0) setNotice(`הקובץ נוצר, אבל ${missingPhotos === 1 ? 'תמונה אחת לא נטענה ומסומנת' : `${missingPhotos} תמונות לא נטענו ומסומנות`} בדוח. בדקו את החיבור ונסו שוב.`)
     } catch (failure) {
       console.error('Creating PDF failed', failure)
       setError(hasVideos ? 'יצירת הקובץ נכשלה. בדקו את החיבור ונסו שוב (סרטונים גדולים דורשים חיבור טוב).' : 'יצירת ה-PDF נכשלה. בדקו את החיבור ונסו שוב.')
@@ -54,16 +57,16 @@ export function PdfButton({ report, variant = 'full', className }: PdfButtonProp
         {busy ? <Loader2 className="size-5 animate-spin" aria-hidden="true" /> : <FileDown className="size-5" aria-hidden="true" />}
         {variant === 'full' && (busy ? status : label)}
       </button>
-      {(busy || error) && (
+      {(busy || error || notice) && (
         <p
           role={error ? 'alert' : 'status'}
           className={cn(
             'fixed inset-x-4 bottom-24 z-50 mx-auto max-w-sm rounded-xl px-4 py-3 text-center text-sm font-medium shadow-lg',
-            error ? 'bg-destructive text-primary-foreground' : 'bg-foreground text-background',
+            error || notice ? 'bg-destructive text-primary-foreground' : 'bg-foreground text-background',
           )}
-          onClick={() => setError('')}
+          onClick={() => { setError(''); setNotice('') }}
         >
-          {error || `מכין ${hasVideos ? 'קובץ' : 'PDF'}... ${status}`}
+          {error || notice || `מכין ${hasVideos ? 'קובץ' : 'PDF'}... ${status}`}
         </p>
       )}
     </>
