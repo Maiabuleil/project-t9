@@ -1,7 +1,8 @@
 import type { CSSProperties, ReactNode } from 'react'
-import type { CheckResult, Finding, InspectionId } from '@/lib/types'
+import type { CheckResult, InspectionId } from '@/lib/types'
 
-// Page layout for the generated PDF, matching the company's Word report template.
+// Page layout for the generated PDF. It reproduces the company's Word report template; only the
+// apartment details, inspection results and the report's own photos change from report to report.
 // Styles are inline (plain hex colors, no Tailwind) so the page renders the same when captured to an image.
 
 export const PAGE_WIDTH = 794 // A4 at 96 dpi
@@ -17,7 +18,7 @@ export type PdfAssets = { logo: string; association: string; watermark: string }
 
 export type PdfPhoto = { src: string; caption: string; note: string }
 
-export type PdfPhotoPair = { inspection: string; before: PdfPhoto | null; after: PdfPhoto | null }
+export type PdfPhotoPair = { before: PdfPhoto | null; after: PdfPhoto | null }
 
 export type PdfResultRow = { label: string; result: CheckResult; note: string }
 
@@ -30,8 +31,6 @@ export type PdfData = {
   unit: string
   inspector: string
   results: PdfResultRow[]
-  findings: Finding[]
-  findingsSeverity: Record<string, string>
   photoPairs: PdfPhotoPair[]
   assets: PdfAssets
 }
@@ -43,11 +42,7 @@ export const PDF_INSPECTION_LABELS: Record<InspectionId, string> = {
   'ac-line': 'קו מזגן',
 }
 
-const FINDINGS_PER_PAGE = 4
-
 export function ReportPdfPages({ data }: { data: PdfData }) {
-  const findingPages: Finding[][] = []
-  for (let i = 0; i < data.findings.length; i += FINDINGS_PER_PAGE) findingPages.push(data.findings.slice(i, i + FINDINGS_PER_PAGE))
   const lastPhotoIndex = data.photoPairs.length - 1
 
   return (
@@ -55,11 +50,6 @@ export function ReportPdfPages({ data }: { data: PdfData }) {
       <Page data={data}>
         <CoverContent data={data} />
       </Page>
-      {findingPages.map((findings, index) => (
-        <Page key={`findings-${index}`} data={data}>
-          <FindingsContent findings={findings} offset={index * FINDINGS_PER_PAGE} severity={data.findingsSeverity} />
-        </Page>
-      ))}
       <Page data={data}>
         <TermsContent />
         {data.photoPairs.length === 0 && <Closing />}
@@ -190,36 +180,6 @@ function ResultMark({ result }: { result: CheckResult }) {
   )
 }
 
-function FindingsContent({ findings, offset, severity }: { findings: Finding[]; offset: number; severity: Record<string, string> }) {
-  return (
-    <div>
-      <h2 style={{ ...sectionTitle, fontSize: 22 }}>ממצאים נוספים</h2>
-      <table style={{ width: '100%', borderCollapse: 'collapse', background: 'rgba(255,255,255,0.8)', tableLayout: 'fixed' }}>
-        <thead>
-          <tr>
-            <th style={{ ...shadedCell, fontWeight: 400, width: 34 }}>#</th>
-            <th style={{ ...shadedCell, fontWeight: 400, width: '20%' }}>מיקום</th>
-            <th style={{ ...shadedCell, fontWeight: 400 }}>תיאור</th>
-            <th style={{ ...shadedCell, fontWeight: 400, width: 74 }}>חומרה</th>
-            <th style={{ ...shadedCell, fontWeight: 400, width: '26%' }}>המלצה</th>
-          </tr>
-        </thead>
-        <tbody>
-          {findings.map((finding, index) => (
-            <tr key={finding.id}>
-              <td style={{ ...cell, verticalAlign: 'top' }}>{offset + index + 1}</td>
-              <td style={{ ...cell, verticalAlign: 'top' }}>{clip(finding.location, 80)}</td>
-              <td style={{ ...cell, verticalAlign: 'top' }}>{clip(finding.description, 320)}</td>
-              <td style={{ ...cell, verticalAlign: 'top' }}>{severity[finding.severity] ?? finding.severity}</td>
-              <td style={{ ...cell, verticalAlign: 'top' }}>{clip(finding.recommendation, 220)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
 const termsHeading: CSSProperties = { color: BLUE, fontSize: 14, margin: '0 0 4px' }
 const termsText: CSSProperties = { fontSize: 14, lineHeight: 1.45, margin: '0 0 9px' }
 
@@ -248,8 +208,7 @@ function PhotoPairContent({ pair }: { pair: PdfPhotoPair }) {
   return (
     <div style={{ paddingTop: 36 }}>
       <p style={{ fontSize: 15, fontWeight: 700, margin: '0 0 6px' }}>תיעוד מצולם לפני ואחרי ביצוע הבדיקה</p>
-      <p style={{ fontSize: 13, margin: '0 0 16px' }}>התמונות שלהלן מתעדות את מצב המקטעים לפני הבדיקה ולאחריה, בציון מיקום ותיאור קצר.</p>
-      <p style={{ color: BLUE, fontSize: 15, fontWeight: 700, margin: '0 0 8px' }}>{pair.inspection}</p>
+      <p style={{ fontSize: 13, margin: '0 0 28px' }}>התמונות שלהלן מתעדות את מצב המקטעים לפני הבדיקה ולאחריה, בציון מיקום ותיאור קצר.</p>
       <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', background: '#FFFFFF' }}>
         <thead>
           <tr>

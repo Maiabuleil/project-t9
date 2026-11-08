@@ -2,8 +2,8 @@
 
 import { flushSync } from 'react-dom'
 import { createRoot } from 'react-dom/client'
-import type { MediaItem, Report } from '@/lib/types'
-import { INSPECTION_ORDER, SEVERITY_META } from '@/lib/report-utils'
+import type { InspectionId, MediaItem, Report } from '@/lib/types'
+import { INSPECTION_ORDER } from '@/lib/report-utils'
 import { createClient } from '@/lib/supabase/client'
 import { PAGE_HEIGHT, PAGE_WIDTH, PDF_INSPECTION_LABELS, ReportPdfPages, type PdfData, type PdfPhoto, type PdfPhotoPair } from './report-pdf-pages'
 
@@ -12,9 +12,38 @@ export type PdfProgress = { step: string; done: number; total: number }
 // Largest side of a photo inside the PDF. Phone photos are scaled down so the file stays small enough to send.
 const MAX_PHOTO_SIDE = 1400
 
-// Builds the report PDF in the browser and downloads it.
+export function reportVideos(report: Report): { item: MediaItem; inspection: InspectionId }[] {
+  return report.inspections.flatMap((inspection) => inspection.media.filter((item) => item.kind === 'video').map((item) => ({ item, inspection: inspection.id })))
+}
+
+// Builds the report PDF in the browser and downloads it. When the report has videos, the PDF and
+// the videos are downloaded together as one ZIP, since videos cannot be placed inside a PDF.
+export async function exportReport(report: Report, onProgress?: (progress: PdfProgress) => void): Promise<void> {
+  const pdf = await buildReportPdf(report, onProgress)
+  const baseName = reportFileBaseName(report)
+  const videos = reportVideos(report)
+  if (videos.length === 0) {
+    saveBlob(pdf, `${baseName}.pdf`)
+    return
+  }
+
+  const { downloadZip } = await import('client-zip')
+  const usedNames = new Set<string>([`${baseName}.pdf`])
+  const entries: { name: string; input: Blob; lastModified: Date }[] = [{ name: `${baseName}.pdf`, input: pdf, lastModified: new Date() }]
+  for (const [index, { item, inspection }] of videos.entries()) {
+    onProgress?.({ step: 'מוריד סרטונים', done: index, total: videos.length })
+    const response = await fetch(await resolveMediaUrl(item))
+    if (!response.ok) throw new Error(`Video download failed (${response.status}): ${item.name}`)
+    const phase = item.phase === 'before' ? 'לפני' : 'אחרי'
+    const name = uniqueName(usedNames, safeFileName(`${PDF_INSPECTION_LABELS[inspection]} - ${phase} - ${item.location || item.name}`), videoExtension(item))
+    entries.push({ name, input: await response.blob(), lastModified: new Date() })
+  }
+  onProgress?.({ step: 'יוצר ZIP', done: videos.length, total: videos.length })
+  saveBlob(await downloadZip(entries).blob(), `${baseName}.zip`)
+}
+
 // Pages are laid out as HTML (so Hebrew and right-to-left text render correctly), captured as images and placed on A4 pages.
-export async function generateReportPdf(report: Report, onProgress?: (progress: PdfProgress) => void): Promise<void> {
+async function buildReportPdf(report: Report, onProgress?: (progress: PdfProgress) => void): Promise<Blob> {
   const [{ jsPDF }, { toJpeg }] = await Promise.all([import('jspdf'), import('html-to-image')])
 
   const photos = report.inspections.flatMap((inspection) => inspection.media.filter((item) => item.kind === 'image'))
@@ -59,7 +88,7 @@ export async function generateReportPdf(report: Report, onProgress?: (progress: 
     }
     onProgress?.({ step: 'שומר', done: pages.length, total: pages.length })
     pdf.setProperties({ title: `דוח בדיקת קווי דלוחים ${data.reportNumber}`.trim(), author: 'שארק רובוטים מתקדמים בע"מ' })
-    pdf.save(pdfFileName(report))
+    return pdf.output('blob')
   } finally {
     root.unmount()
     container.remove()
@@ -88,7 +117,7 @@ function buildPdfData(report: Report, photoSources: Map<string, string>, assets:
     const before = inspection.media.filter((item) => item.kind === 'image' && item.phase === 'before').map(toPhoto).filter((photo) => photo !== null)
     const after = inspection.media.filter((item) => item.kind === 'image' && item.phase === 'after').map(toPhoto).filter((photo) => photo !== null)
     for (let i = 0; i < Math.max(before.length, after.length); i += 1) {
-      photoPairs.push({ inspection: PDF_INSPECTION_LABELS[inspection.id], before: before[i] ?? null, after: after[i] ?? null })
+      photoPairs.push({ before: before[i] ?? null, after: after[i] ?? null })
     }
   }
 
@@ -101,8 +130,6 @@ function buildPdfData(report: Report, photoSources: Map<string, string>, assets:
     unit,
     inspector: details.inspector,
     results,
-    findings: report.findings.filter((finding) => finding.location.trim() || finding.description.trim() || finding.recommendation.trim()),
-    findingsSeverity: Object.fromEntries(Object.entries(SEVERITY_META).map(([key, meta]) => [key, meta.label])),
     photoPairs,
     assets,
   }
@@ -148,7 +175,37 @@ function formatPdfDate(iso: string) {
   return match ? `${match[3]}/${match[2]}/${match[1]}` : iso
 }
 
-function pdfFileName(report: Report) {
+function reportFileBaseName(report: Report) {
   const parts = ['דוח', report.details.reportNumber, report.details.address, report.details.apartment && `דירה ${report.details.apartment}`]
-  return `${parts.filter(Boolean).join(' ').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim()}.pdf`
+  return safeFileName(parts.filter(Boolean).join(' ')) || 'דוח'
+}
+
+function safeFileName(name: string) {
+  return name.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120)
+}
+
+function videoExtension(item: MediaItem) {
+  const fromName = /\.([a-zA-Z0-9]{2,5})$/.exec(item.name)?.[1]
+  const fromPath = /\.([a-zA-Z0-9]{2,5})$/.exec(item.storagePath ?? '')?.[1]
+  return (fromName || fromPath || 'mp4').toLowerCase()
+}
+
+function uniqueName(used: Set<string>, base: string, extension: string) {
+  let name = `${base || 'סרטון'}.${extension}`
+  for (let n = 2; used.has(name); n += 1) name = `${base || 'סרטון'} (${n}).${extension}`
+  used.add(name)
+  return name
+}
+
+function saveBlob(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = fileName
+  link.rel = 'noopener'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  // Give the browser time to start the download before releasing the file from memory.
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
