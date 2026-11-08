@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { LogOut, UserPlus } from 'lucide-react'
+import { Loader2, LogOut, UserPlus } from 'lucide-react'
 import { SAMPLE_REPORTS } from '@/lib/sample-data'
 import { createEmptyReport } from '@/lib/report-utils'
 import type { Inspection, MediaItem, Report } from '@/lib/types'
@@ -30,6 +30,9 @@ export function ReportsApp() {
   // Pending local media id -> stored item, so a queued save holding an older snapshot never uploads the same file twice.
   const uploadedMedia = useRef(new Map<string, MediaItem>())
   const userId: string | undefined = session?.user?.id
+  // Set by the open report form: saves its latest unsaved edits right away.
+  const flushForm = useRef<(() => void) | null>(null)
+  const [signingOut, setSigningOut] = useState(false)
 
   useEffect(() => {
     const supabase = createClient()
@@ -77,7 +80,20 @@ export function ReportsApp() {
   if (!session) return <LoginScreen />
   if (loading) return <main className="flex min-h-dvh items-center justify-center text-muted-foreground">טוען את הדוחות...</main>
 
-  function openReport(report: Report, fresh: boolean) { setActiveReport(report); setIsNew(fresh); window.scrollTo({ top: 0 }) }
+  // Logging out used to cancel the pending autosave, so edits made just before switching users were lost.
+  async function signOut() {
+    if (signingOut) return
+    setSigningOut(true)
+    try {
+      flushForm.current?.()
+      await saveChain.current
+    } finally {
+      await createClient().auth.signOut()
+      setSigningOut(false)
+    }
+  }
+
+  function openReport(report: Report, fresh: boolean) { setMessage(''); setActiveReport(report); setIsNew(fresh); window.scrollTo({ top: 0 }) }
   function closeReport() { setActiveReport(null); window.scrollTo({ top: 0 }) }
 
   async function deleteReport(report: Report) {
@@ -102,7 +118,8 @@ export function ReportsApp() {
     setMessage('')
     console.log('[v0] saving report', { id: report.id, status: report.status })
     const supabase = createClient()
-    const basePayload = { id: report.id, owner_id: session.user.id, status: report.status, project: report.details.project, address: report.details.address, building: report.details.building, apartment: report.details.apartment, floor: report.details.floor, client_name: report.details.clientName, inspector: report.details.inspector, report_date: report.details.date || null, updated_at: new Date().toISOString() }
+    const ownerId = report.ownerId ?? session.user.id
+    const basePayload = { id: report.id, owner_id: ownerId, status: report.status, project: report.details.project, address: report.details.address, building: report.details.building, apartment: report.details.apartment, floor: report.details.floor, client_name: report.details.clientName, inspector: report.details.inspector, report_date: report.details.date || null, updated_at: new Date().toISOString() }
     // Omit report_number for brand-new reports so the database sequence assigns a unique number (safe under concurrency).
     const payload = report.details.reportNumber ? { ...basePayload, report_number: report.details.reportNumber } : basePayload
     const { data: saved, error } = await supabase.from('reports').upsert(payload).select('id, report_number').single()
@@ -195,7 +212,7 @@ export function ReportsApp() {
       }
       persistedInspections.push({ ...inspection, media: nextMedia })
     }
-    const persisted: Report = { ...report, details: { ...report.details, reportNumber: saved.report_number ?? report.details.reportNumber }, inspections: persistedInspections }
+    const persisted: Report = { ...report, ownerId, details: { ...report.details, reportNumber: saved.report_number ?? report.details.reportNumber }, inspections: persistedInspections }
     setReports((prev) => prev.some((item) => item.id === persisted.id) ? prev.map((item) => item.id === persisted.id ? persisted : item) : [persisted, ...prev])
     if (failedNames.length) {
       setMessage(`הדוח נשמר, אך העלאה או שמירת פרטי הקבצים הבאים נכשלה: ${failedNames.join(', ')}. נסו לשמור שוב לפני רענון הדף.`)
@@ -205,11 +222,11 @@ export function ReportsApp() {
     return persisted
   }
 
-  return <div className="mx-auto min-h-dvh w-full max-w-md bg-background"><header className="flex items-center justify-between border-b border-border bg-card px-4 py-3"><div><p className="text-xs font-bold text-primary">שארק רובוטים מתקדמים</p><p className="text-sm font-semibold">{profile?.full_name || session.user.email} · {profile?.role === 'manager' ? 'מנהל' : 'עובד'}</p></div><button type="button" onClick={() => createClient().auth.signOut()} className="flex size-10 items-center justify-center rounded-xl hover:bg-muted" aria-label="התנתקות"><LogOut className="size-5" /></button></header>{activeReport ? <ReportForm key={activeReport.id} initialReport={activeReport} isNew={isNew} onCancel={closeReport} onSave={(report, onProgress) => saveReport(report, true, onProgress)} onAutosave={(draft) => saveReport(draft, false)} /> : <><ReportList reports={reports.length ? reports : SAMPLE_REPORTS} onCreate={() => openReport(createEmptyReport(reports), true)} onOpen={(report) => openReport(report, false)} canDelete={profile?.role === 'manager' && reports.length > 0} onDelete={deleteReport} /><div className="px-4 pb-6"><p className="mb-3 text-xs text-muted-foreground">הדוחות המוצגים ללא התחברות למסד הנתונים מסומנים כדוגמה.</p>{profile?.role === 'manager' && <ManagerInvite />}{message && <p role="status" className="mt-3 rounded-xl bg-success-soft px-3 py-3 text-sm text-success">{message}</p>}</div></>}</div>
+  return <div className="mx-auto min-h-dvh w-full max-w-md bg-background"><header className="flex items-center justify-between border-b border-border bg-card px-4 py-3"><div><p className="text-xs font-bold text-primary">שארק רובוטים מתקדמים</p><p className="text-sm font-semibold">{profile?.full_name || session.user.email} · {profile?.role === 'manager' ? 'מנהל' : 'עובד'}</p></div><button type="button" onClick={signOut} disabled={signingOut} className="flex size-10 items-center justify-center rounded-xl hover:bg-muted disabled:opacity-60" aria-label={signingOut ? 'שומר ומתנתק' : 'התנתקות'}>{signingOut ? <Loader2 className="size-5 animate-spin" /> : <LogOut className="size-5" />}</button></header>{activeReport ? <ReportForm key={activeReport.id} initialReport={activeReport} isNew={isNew} onCancel={closeReport} onSave={(report, onProgress) => saveReport(report, true, onProgress)} onAutosave={(draft) => saveReport(draft, false)} flushRef={flushForm} saveMessage={message} /> : <><ReportList reports={reports.length ? reports : SAMPLE_REPORTS} onCreate={() => openReport(createEmptyReport(reports), true)} onOpen={(report) => openReport(report, false)} canDelete={profile?.role === 'manager' && reports.length > 0} onDelete={deleteReport} /><div className="px-4 pb-6"><p className="mb-3 text-xs text-muted-foreground">הדוחות המוצגים ללא התחברות למסד הנתונים מסומנים כדוגמה.</p>{profile?.role === 'manager' && <ManagerInvite />}{message && <p role="status" className="mt-3 rounded-xl bg-success-soft px-3 py-3 text-sm text-success">{message}</p>}</div></>}</div>
 }
 
 function fromDatabase(row: any, mediaRows: any[] = []): Report {
-  return { id: row.id, status: row.status, details: { project: row.project, reportNumber: row.report_number, address: row.address, building: row.building, apartment: row.apartment, floor: row.floor, clientName: row.client_name, inspector: row.inspector, date: row.report_date ?? '' }, inspections: inspectionNames.map((id) => { const item = row.inspections?.find((entry: any) => entry.inspection_key === id); return { id, result: item?.result ?? null, note: item?.note ?? '', media: mediaRows.filter((media) => media.inspection_id === item?.id).map((media) => ({ id: media.id, url: media.url, kind: media.kind, name: media.file_name, phase: media.phase, location: media.location, note: media.note, storagePath: media.storage_path })) } }), findings: row.findings ?? [] }
+  return { id: row.id, ownerId: row.owner_id ?? undefined, status: row.status, details: { project: row.project, reportNumber: row.report_number, address: row.address, building: row.building, apartment: row.apartment, floor: row.floor, clientName: row.client_name, inspector: row.inspector, date: row.report_date ?? '' }, inspections: inspectionNames.map((id) => { const item = row.inspections?.find((entry: any) => entry.inspection_key === id); return { id, result: item?.result ?? null, note: item?.note ?? '', media: mediaRows.filter((media) => media.inspection_id === item?.id).map((media) => ({ id: media.id, url: media.url, kind: media.kind, name: media.file_name, phase: media.phase, location: media.location, note: media.note, storagePath: media.storage_path })) } }), findings: row.findings ?? [] }
 }
 
 function ManagerInvite() {

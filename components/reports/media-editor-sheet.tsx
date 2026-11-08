@@ -1,7 +1,8 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
-import { Trash2, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Download, Loader2, Trash2, X } from 'lucide-react'
+import { createClient } from '@/lib/supabase/client'
 import type { MediaItem, MediaPhase } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { Field, TextArea, TextInput } from './fields'
@@ -22,6 +23,38 @@ const PHASES: { value: MediaPhase; label: string }[] = [
 export function MediaEditorSheet({ item, onClose, onUpdate, onRemove }: MediaEditorSheetProps) {
   const dialogRef = useRef<HTMLDialogElement>(null)
   const isOpen = item !== null
+  const [downloading, setDownloading] = useState(false)
+  const [downloadError, setDownloadError] = useState('')
+
+  useEffect(() => { setDownloadError('') }, [item?.id])
+
+  async function handleDownload() {
+    if (!item || downloading) return
+    setDownloadError('')
+    setDownloading(true)
+    try {
+      let href = item.url
+      if (!item.file) {
+        if (!item.storagePath) throw new Error('missing storage path')
+        // A signed URL with `download` makes the browser save the file under its original name.
+        const { data, error } = await createClient().storage.from('report-media').createSignedUrl(item.storagePath, 300, { download: item.name || true })
+        if (error || !data?.signedUrl) throw error ?? new Error('no signed url')
+        href = data.signedUrl
+      }
+      const link = document.createElement('a')
+      link.href = href
+      link.download = item.name || (item.kind === 'video' ? 'video.mp4' : 'image.jpg')
+      link.rel = 'noopener'
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+    } catch (downloadFailure) {
+      console.error('Downloading media failed', downloadFailure)
+      setDownloadError('הורדת הקובץ נכשלה. בדקו את החיבור ונסו שוב.')
+    } finally {
+      setDownloading(false)
+    }
+  }
 
   useEffect(() => {
     const dialog = dialogRef.current
@@ -102,6 +135,10 @@ export function MediaEditorSheet({ item, onClose, onUpdate, onRemove }: MediaEdi
             />
           </Field>
 
+          {downloadError && (
+            <p role="alert" className="rounded-lg bg-destructive-soft px-3 py-2 text-sm text-destructive">{downloadError}</p>
+          )}
+
           <div className="grid grid-cols-3 gap-2">
             <button
               type="button"
@@ -113,8 +150,17 @@ export function MediaEditorSheet({ item, onClose, onUpdate, onRemove }: MediaEdi
             </button>
             <button
               type="button"
+              onClick={handleDownload}
+              disabled={downloading}
+              className="flex h-14 items-center justify-center gap-2 rounded-xl border border-input text-base font-semibold hover:bg-muted disabled:opacity-60"
+            >
+              {downloading ? <Loader2 className="size-5 animate-spin" aria-hidden="true" /> : <Download className="size-5" aria-hidden="true" />}
+              הורדה
+            </button>
+            <button
+              type="button"
               onClick={onClose}
-              className="col-span-2 h-14 rounded-xl bg-primary text-base font-bold text-primary-foreground hover:bg-primary/90"
+              className="h-14 rounded-xl bg-primary text-base font-bold text-primary-foreground hover:bg-primary/90"
             >
               שמירה
             </button>

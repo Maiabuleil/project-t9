@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
 import { ArrowRight, CheckCheck, Loader2, Save } from 'lucide-react'
 import type { Finding, Inspection, Report, ReportDetails } from '@/lib/types'
 import type { SaveProgress } from './reports-app'
@@ -17,9 +17,11 @@ type ReportFormProps = {
   onCancel: () => void
   onSave: (report: Report, onProgress?: (p: SaveProgress) => void) => Promise<Report | void> | void
   onAutosave?: (report: Report) => Promise<Report | void> | void
+  flushRef?: MutableRefObject<(() => void) | null>
+  saveMessage?: string
 }
 
-export function ReportForm({ initialReport, isNew, onCancel, onSave, onAutosave }: ReportFormProps) {
+export function ReportForm({ initialReport, isNew, onCancel, onSave, onAutosave, flushRef, saveMessage }: ReportFormProps) {
   const [report, setReport] = useState<Report>(initialReport)
   const [error, setError] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
@@ -51,13 +53,31 @@ export function ReportForm({ initialReport, isNew, onCancel, onSave, onAutosave 
     return () => window.clearTimeout(timer)
   }, [report, isSaving, adoptSaved])
 
-  function handleBack() {
-    // Leaving used to cancel the pending autosave, losing the last ~1.5 seconds of typing.
+  // Saves unsaved edits immediately instead of waiting for the autosave timer.
+  const flush = useCallback(() => {
     const current = latestReport.current
     if (autosaveCallback.current && current !== lastSent.current) {
       lastSent.current = current
       void autosaveCallback.current({ ...current, status: 'draft' })
     }
+  }, [])
+
+  // Expose flush to the app (used before logging out) and save when the phone hides or closes the page.
+  useEffect(() => {
+    if (flushRef) flushRef.current = flush
+    const onHide = () => { if (document.visibilityState === 'hidden') flush() }
+    document.addEventListener('visibilitychange', onHide)
+    window.addEventListener('pagehide', flush)
+    return () => {
+      if (flushRef && flushRef.current === flush) flushRef.current = null
+      document.removeEventListener('visibilitychange', onHide)
+      window.removeEventListener('pagehide', flush)
+    }
+  }, [flush, flushRef])
+
+  function handleBack() {
+    // Leaving used to cancel the pending autosave, losing the last ~1.5 seconds of typing.
+    flush()
     onCancel()
   }
 
@@ -155,6 +175,11 @@ export function ReportForm({ initialReport, isNew, onCancel, onSave, onAutosave 
       </main>
 
       <footer className="sticky bottom-0 z-20 flex flex-col gap-2 border-t border-border bg-card px-4 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-3">
+        {saveMessage && !isSaving && (
+          <p role="alert" className="rounded-lg bg-destructive-soft px-3 py-2 text-sm leading-relaxed text-destructive">
+            {saveMessage}
+          </p>
+        )}
         {error && (
           <p role="alert" className="rounded-lg bg-destructive-soft px-3 py-2 text-sm leading-relaxed text-destructive">
             {error}

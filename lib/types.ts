@@ -51,6 +51,8 @@ export type ReportDetails = {
 
 export type Report = {
   id: string
+  // The worker who owns the report. Kept on save so a manager editing it does not take over ownership.
+  ownerId?: string
   status: ReportStatus
   details: ReportDetails
   inspections: Inspection[]
