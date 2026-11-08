@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { Download, Loader2, Trash2, X } from 'lucide-react'
-import { createClient } from '@/lib/supabase/client'
+import { downloadMedia } from '@/lib/download-media'
 import type { MediaItem, MediaPhase } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { Field, TextArea, TextInput } from './fields'
@@ -33,21 +33,7 @@ export function MediaEditorSheet({ item, onClose, onUpdate, onRemove }: MediaEdi
     setDownloadError('')
     setDownloading(true)
     try {
-      let href = item.url
-      if (!item.file) {
-        if (!item.storagePath) throw new Error('missing storage path')
-        // A signed URL with `download` makes the browser save the file under its original name.
-        const { data, error } = await createClient().storage.from('report-media').createSignedUrl(item.storagePath, 300, { download: item.name || true })
-        if (error || !data?.signedUrl) throw error ?? new Error('no signed url')
-        href = data.signedUrl
-      }
-      const link = document.createElement('a')
-      link.href = href
-      link.download = item.name || (item.kind === 'video' ? 'video.mp4' : 'image.jpg')
-      link.rel = 'noopener'
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
+      await downloadMedia(item)
     } catch (downloadFailure) {
       console.error('Downloading media failed', downloadFailure)
       setDownloadError('הורדת הקובץ נכשלה. בדקו את החיבור ונסו שוב.')

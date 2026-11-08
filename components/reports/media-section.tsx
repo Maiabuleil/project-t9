@@ -1,7 +1,8 @@
 'use client'
 
 import { useRef, useState, type ChangeEvent } from 'react'
-import { Camera, ImagePlus, MapPin, Video } from 'lucide-react'
+import { Camera, Download, ImagePlus, Loader2, MapPin, Video } from 'lucide-react'
+import { downloadMedia } from '@/lib/download-media'
 import type { InspectionId, MediaItem, MediaPhase } from '@/lib/types'
 import { createId } from '@/lib/report-utils'
 import { cn } from '@/lib/utils'
@@ -210,7 +211,25 @@ function PhaseColumn({
 }
 
 function MediaThumb({ item, onClick }: { item: MediaItem; onClick: () => void }) {
+  const [downloading, setDownloading] = useState(false)
+  const [failed, setFailed] = useState(false)
+
+  async function handleDownload() {
+    if (downloading) return
+    setFailed(false)
+    setDownloading(true)
+    try {
+      await downloadMedia(item)
+    } catch (error) {
+      console.error('Downloading media failed', error)
+      setFailed(true)
+    } finally {
+      setDownloading(false)
+    }
+  }
+
   return (
+    <div className="relative">
     <button
       type="button"
       onClick={onClick}
@@ -229,5 +248,19 @@ function MediaThumb({ item, onClick }: { item: MediaItem; onClick: () => void })
         <span className="truncate">{item.location || 'הוספת מיקום'}</span>
       </span>
     </button>
+    {/* Sits on top of the thumbnail; a separate button because buttons cannot be nested. */}
+    <button
+      type="button"
+      onClick={handleDownload}
+      disabled={downloading}
+      className={cn(
+        'absolute end-1.5 top-1.5 z-10 flex size-9 items-center justify-center rounded-full bg-card/90 shadow-sm hover:bg-card focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring/30 disabled:opacity-70',
+        failed ? 'text-destructive' : 'text-foreground',
+      )}
+    >
+      {downloading ? <Loader2 className="size-4.5 animate-spin" aria-hidden="true" /> : <Download className="size-4.5" aria-hidden="true" />}
+      <span className="sr-only">{failed ? `הורדת ${item.name} נכשלה, נסו שוב` : `הורדת ${item.name}`}</span>
+    </button>
+    </div>
   )
 }
