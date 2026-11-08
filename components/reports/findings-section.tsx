@@ -1,5 +1,6 @@
 'use client'
 
+import { memo } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
 import type { Finding, Severity } from '@/lib/types'
 import { createId, SEVERITY_META, SEVERITY_ORDER } from '@/lib/report-utils'
@@ -11,7 +12,7 @@ type FindingsSectionProps = {
   onChange: (findings: Finding[]) => void
 }
 
-export function FindingsSection({ findings, onChange }: FindingsSectionProps) {
+export const FindingsSection = memo(function FindingsSection({ findings, onChange }: FindingsSectionProps) {
   function addFinding() {
     onChange([
       ...findings,
@@ -59,7 +60,7 @@ export function FindingsSection({ findings, onChange }: FindingsSectionProps) {
       </button>
     </FormSection>
   )
-}
+})
 
 function FindingCard({
   index,

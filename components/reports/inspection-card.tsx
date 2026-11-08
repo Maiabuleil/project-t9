@@ -1,5 +1,6 @@
 'use client'
 
+import { memo } from 'react'
 import { AirVent, CircleCheck, CircleX, Droplets, ScanEye, Waves } from 'lucide-react'
 import type { CheckResult, Inspection, InspectionId } from '@/lib/types'
 import { INSPECTION_META } from '@/lib/report-utils'
@@ -19,7 +20,8 @@ type InspectionCardProps = {
   onChange: (inspection: Inspection) => void
 }
 
-export function InspectionCard({ inspection, onChange }: InspectionCardProps) {
+// Memoized: a keystroke in one card no longer re-renders the other cards and their photos.
+export const InspectionCard = memo(function InspectionCard({ inspection, onChange }: InspectionCardProps) {
   const meta = INSPECTION_META[inspection.id]
   const Icon = ICONS[inspection.id]
   const headingId = `inspection-${inspection.id}`
@@ -82,7 +84,7 @@ export function InspectionCard({ inspection, onChange }: InspectionCardProps) {
       />
     </article>
   )
-}
+})
 
 function ResultButton({
   active,
