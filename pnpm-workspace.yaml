@@ -3,3 +3,7 @@ pmOnFail: ignore
 minimumReleaseAgeExclude:
   - '@next/*'
   - next
+
+allowBuilds:
+  # core-js only prints a funding banner on install; it needs no build step.
+  core-js: false
