@@ -11,6 +11,8 @@ export type PdfProgress = { step: string; done: number; total: number }
 
 // Largest side of a photo inside the PDF. Phone photos are scaled down so the file stays small enough to send.
 const MAX_PHOTO_SIDE = 1400
+// Page text is captured at a lower resolution on phones to stay within their memory limits.
+const CAPTURE_PIXEL_RATIO = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches ? 1.5 : 2
 
 export function reportVideos(report: Report): { item: MediaItem; inspection: InspectionId }[] {
   return report.inspections.flatMap((inspection) => inspection.media.filter((item) => item.kind === 'video').map((item) => ({ item, inspection: inspection.id })))
@@ -90,7 +92,7 @@ async function buildReportPdf(report: Report, onProgress?: (progress: PdfProgres
     const withoutImages = (node: HTMLElement) => !(node instanceof HTMLImageElement && node.dataset.pdfImage !== undefined)
     for (const [index, page] of pages.entries()) {
       onProgress?.({ step: 'יוצר עמודים', done: index, total: pages.length })
-      const text = await toJpeg(page, { width: PAGE_WIDTH, height: PAGE_HEIGHT, pixelRatio: 2, quality: 0.85, backgroundColor: '#FFFFFF', skipFonts: true, cacheBust: false, filter: withoutImages })
+      const text = await toJpeg(page, { width: PAGE_WIDTH, height: PAGE_HEIGHT, pixelRatio: CAPTURE_PIXEL_RATIO, quality: 0.85, backgroundColor: '#FFFFFF', skipFonts: true, cacheBust: false, filter: withoutImages })
       if (index > 0) pdf.addPage()
       pdf.addImage(text, 'JPEG', 0, 0, 210, 297, undefined, 'FAST')
 
@@ -196,10 +198,15 @@ async function loadImage(url: string, maxSide: number, type: 'image/jpeg' | 'ima
     }
     context.drawImage(img, 0, 0, canvas.width, canvas.height)
     const dataUrl = canvas.toDataURL(type, 0.85)
+    // Free the canvas right away: iPhones cap total canvas memory, and once it is used up every further
+    // photo comes back empty.
+    canvas.width = 0
+    canvas.height = 0
     if (!dataUrl.startsWith(`data:${type}`)) throw new Error('could not encode image')
     return dataUrl
   } finally {
     if (objectUrl) URL.revokeObjectURL(objectUrl)
+    img.src = ''
   }
 }
 
