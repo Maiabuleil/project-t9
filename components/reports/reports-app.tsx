@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { LogOut, UserPlus } from 'lucide-react'
 import { SAMPLE_REPORTS } from '@/lib/sample-data'
 import { createEmptyReport } from '@/lib/report-utils'
@@ -12,6 +12,7 @@ import { ReportForm } from './report-form'
 import { LoginScreen } from '@/components/auth/login-screen'
 
 const inspectionNames = ['flushing', 'flood', 'camera', 'ac-line'] as const
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export type SaveProgress = { fileName: string; done: number; total: number; percent: number }
 
@@ -23,6 +24,12 @@ export function ReportsApp() {
   const [isNew, setIsNew] = useState(false)
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
+  // Saves run one at a time, in order. Overlapping saves (autosave + manual save) used to finish
+  // out of order, so an older snapshot could overwrite newer text and duplicate findings/uploads.
+  const saveChain = useRef<Promise<unknown>>(Promise.resolve())
+  // Pending local media id -> stored item, so a queued save holding an older snapshot never uploads the same file twice.
+  const uploadedMedia = useRef(new Map<string, MediaItem>())
+  const userId: string | undefined = session?.user?.id
 
   useEffect(() => {
     const supabase = createClient()
@@ -31,12 +38,14 @@ export function ReportsApp() {
     return () => listener.subscription.unsubscribe()
   }, [])
 
+  // Reload only when the signed-in user changes. Supabase emits a new session object on every token
+  // refresh and when the tab regains focus; reloading on each one re-signed every image URL and slowed the app.
   useEffect(() => {
-    if (!session?.user) { setLoading(false); return }
+    if (!userId) { setLoading(false); return }
     const load = async () => {
       const supabase = createClient()
       const [{ data: currentProfile }, { data: rows, error: reportsError }] = await Promise.all([
-        supabase.from('profiles').select('full_name, role').eq('id', session.user.id).single(),
+        supabase.from('profiles').select('full_name, role').eq('id', userId).single(),
         supabase.from('reports').select('id, status, project, report_number, address, building, apartment, floor, client_name, inspector, report_date, owner_id, inspections(id, inspection_key, result, note), findings(id, location, description, severity, recommendation)').order('updated_at', { ascending: false }),
       ])
       if (reportsError) {
@@ -63,7 +72,7 @@ export function ReportsApp() {
       setLoading(false)
     }
     load()
-  }, [session])
+  }, [userId])
 
   if (!session) return <LoginScreen />
   if (loading) return <main className="flex min-h-dvh items-center justify-center text-muted-foreground">טוען את הדוחות...</main>
@@ -83,7 +92,13 @@ export function ReportsApp() {
     setMessage('הדוח נמחק בהצלחה.')
   }
 
-  async function saveReport(report: Report, close = true, onProgress?: (p: SaveProgress) => void): Promise<Report | void> {
+  function saveReport(report: Report, close = true, onProgress?: (p: SaveProgress) => void): Promise<Report | void> {
+    const run = saveChain.current.then(() => saveReportNow(report, close, onProgress))
+    saveChain.current = run.catch((error) => console.error('Saving report failed', error))
+    return run
+  }
+
+  async function saveReportNow(report: Report, close: boolean, onProgress?: (p: SaveProgress) => void): Promise<Report | void> {
     setMessage('')
     console.log('[v0] saving report', { id: report.id, status: report.status })
     const supabase = createClient()
@@ -129,6 +144,15 @@ export function ReportsApp() {
     for (const inspection of report.inspections) {
       const nextMedia: MediaItem[] = []
       for (const media of inspection.media) {
+        const alreadyUploaded = media.file ? uploadedMedia.current.get(media.id) : undefined
+        if (alreadyUploaded) {
+          // An earlier save already uploaded this file; keep the stored copy and its latest details.
+          const stored = { ...alreadyUploaded, phase: media.phase, location: media.location, note: media.note }
+          const { error: updateError } = await supabase.from('media_assets').update({ location: stored.location, note: stored.note, phase: stored.phase }).eq('id', stored.id).eq('report_id', saved.id)
+          if (updateError) { console.error('Updating media details failed', stored.id, updateError); failedNames.push(stored.name) }
+          nextMedia.push(stored)
+          continue
+        }
         if (!media.file) {
           // Existing files still need their editable metadata persisted.
           const { data: updatedMedia, error: updateError } = await supabase.from('media_assets')
@@ -149,7 +173,8 @@ export function ReportsApp() {
         console.log('[v0] uploading media', { name: media.name, kind: media.kind, size: media.file.size, path })
         onProgress?.({ fileName: media.name, done: pendingDone, total: pendingTotal, percent: 0 })
         // Insert the media row first: the storage INSERT RLS policy requires a matching media_assets row (same storage_path/user_id/report owner) to exist before the file upload is permitted.
-        const { data: insertedMedia, error: mediaError } = await supabase.from('media_assets').insert({ report_id: saved.id, inspection_id: inspectionIds.get(inspection.id) ?? null, user_id: session.user.id, storage_path: path, kind: media.kind, phase: media.phase, file_name: media.name, location: media.location, note: media.note }).select('id').single()
+        // Reuse the local id when it is a UUID so the open form can match the pending item to its stored copy.
+        const { data: insertedMedia, error: mediaError } = await supabase.from('media_assets').insert({ ...(UUID_PATTERN.test(media.id) ? { id: media.id } : {}), report_id: saved.id, inspection_id: inspectionIds.get(inspection.id) ?? null, user_id: session.user.id, storage_path: path, kind: media.kind, phase: media.phase, file_name: media.name, location: media.location, note: media.note }).select('id').single()
         if (mediaError || !insertedMedia) { console.log('[v0] media record insert failed', mediaError?.message); failedNames.push(media.name); nextMedia.push(media); pendingDone += 1; continue }
         try {
           await uploadMediaFile({ supabase, path, file: media.file, onProgress: (p) => onProgress?.({ fileName: media.name, done: pendingDone, total: pendingTotal, percent: p.total ? Math.round((p.loaded / p.total) * 100) : 0 }) })
@@ -164,7 +189,9 @@ export function ReportsApp() {
         console.log('[v0] media upload success', media.name)
         pendingDone += 1
         const { data: signed } = await supabase.storage.from('report-media').createSignedUrl(path, 3600)
-        nextMedia.push({ id: insertedMedia.id, url: signed?.signedUrl ?? '', kind: media.kind, name: media.name, phase: media.phase, location: media.location, note: media.note, storagePath: path })
+        const storedItem: MediaItem = { id: insertedMedia.id, url: signed?.signedUrl ?? '', kind: media.kind, name: media.name, phase: media.phase, location: media.location, note: media.note, storagePath: path }
+        uploadedMedia.current.set(media.id, storedItem)
+        nextMedia.push(storedItem)
       }
       persistedInspections.push({ ...inspection, media: nextMedia })
     }
@@ -174,8 +201,7 @@ export function ReportsApp() {
       setMessage(`הדוח נשמר, אך העלאה או שמירת פרטי הקבצים הבאים נכשלה: ${failedNames.join(', ')}. נסו לשמור שוב לפני רענון הדף.`)
       return persisted
     }
-    setMessage('הדוח נשמר בהצלחה.')
-    if (close) closeReport()
+    if (close) { setMessage('הדוח נשמר בהצלחה.'); closeReport() }
     return persisted
   }
 

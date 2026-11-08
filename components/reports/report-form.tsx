@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowRight, CheckCheck, Loader2, Save } from 'lucide-react'
 import type { Finding, Inspection, Report, ReportDetails } from '@/lib/types'
 import type { SaveProgress } from './reports-app'
@@ -24,55 +24,66 @@ export function ReportForm({ initialReport, isNew, onCancel, onSave, onAutosave 
   const [error, setError] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
   const [progress, setProgress] = useState<SaveProgress | null>(null)
-  // Skips the autosave that a saved-result adoption would otherwise trigger, preventing a save loop.
-  const skipNextAutosave = useRef(false)
   const autosaveCallback = useRef(onAutosave)
   autosaveCallback.current = onAutosave
+  // The last snapshot handed to a save, used to flush unsaved edits when leaving the form.
+  const lastSent = useRef<Report>(initialReport)
+  const latestReport = useRef(report)
+  latestReport.current = report
 
-useEffect(() => {
-  if (!autosaveCallback.current || isSaving) return
+  // Merge a finished save into the form without touching what the worker typed meanwhile:
+  // only the assigned report number and newly uploaded files are taken from the result.
+  const adoptSaved = useCallback((saved: Report) => {
+    setReport((prev) => mergeSavedReport(prev, saved))
+  }, [])
 
-  if (skipNextAutosave.current) {
-    skipNextAutosave.current = false
-    return
+  useEffect(() => {
+    if (!autosaveCallback.current || isSaving) return
+    if (report === lastSent.current) return
+
+    const timer = window.setTimeout(() => {
+      lastSent.current = report
+      void Promise.resolve(autosaveCallback.current?.({ ...report, status: 'draft' })).then((saved) => {
+        if (saved) adoptSaved(saved)
+      })
+    }, 1500)
+
+    return () => window.clearTimeout(timer)
+  }, [report, isSaving, adoptSaved])
+
+  function handleBack() {
+    // Leaving used to cancel the pending autosave, losing the last ~1.5 seconds of typing.
+    const current = latestReport.current
+    if (autosaveCallback.current && current !== lastSent.current) {
+      lastSent.current = current
+      void autosaveCallback.current({ ...current, status: 'draft' })
+    }
+    onCancel()
   }
 
-  const timer = window.setTimeout(() => {
-    // Save the current snapshot in the background.
-    // IMPORTANT: do not replace the local form state with the result,
-    // because the user may have continued typing while the request
-    // was being processed.
-    void autosaveCallback.current?.({
-      ...report,
-      status: 'draft',
-    })
-  }, 1500)
+  const updateDetails = useCallback((patch: Partial<ReportDetails>) => {
+    setReport((prev) => ({ ...prev, details: { ...prev.details, ...patch } }))
+  }, [])
 
-  return () => window.clearTimeout(timer)
-}, [report, isSaving])
-
-  function updateDetails(details: ReportDetails) {
-    setReport((prev) => ({ ...prev, details }))
-  }
-
-  function updateInspection(updated: Inspection) {
+  const updateInspection = useCallback((updated: Inspection) => {
     setReport((prev) => ({
       ...prev,
       inspections: prev.inspections.map((i) => (i.id === updated.id ? updated : i)),
     }))
-  }
+  }, [])
 
-  function updateFindings(findings: Finding[]) {
+  const updateFindings = useCallback((findings: Finding[]) => {
     setReport((prev) => ({ ...prev, findings }))
-  }
+  }, [])
 
   async function handleSaveDraft() {
     if (isSaving) return
     setError(null)
     setIsSaving(true)
     try {
+      lastSent.current = report
       const result = await onSave({ ...report, status: 'draft' }, setProgress)
-      if (result) { skipNextAutosave.current = true; setReport(result) }
+      if (result) setReport((prev) => ({ ...mergeSavedReport(prev, result), status: result.status }))
     } finally {
       setIsSaving(false)
       setProgress(null)
@@ -93,8 +104,9 @@ useEffect(() => {
     setError(null)
     setIsSaving(true)
     try {
+      lastSent.current = report
       const result = await onSave({ ...report, status: resolveFinalStatus(report) }, setProgress)
-      if (result) { skipNextAutosave.current = true; setReport(result) }
+      if (result) setReport((prev) => ({ ...mergeSavedReport(prev, result), status: result.status }))
     } finally {
       setIsSaving(false)
       setProgress(null)
@@ -106,7 +118,7 @@ useEffect(() => {
       <header className="sticky top-0 z-20 flex items-center gap-2 border-b border-border bg-background/95 px-2 py-2 backdrop-blur">
         <button
           type="button"
-          onClick={onCancel}
+          onClick={handleBack}
           className="flex size-12 items-center justify-center rounded-xl hover:bg-muted focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring/30"
         >
           <ArrowRight className="size-6" aria-hidden="true" />
@@ -182,4 +194,29 @@ useEffect(() => {
       </footer>
     </div>
   )
+}
+
+// Keeps everything the worker typed in `current`; takes from `saved` only the report number the
+// database assigned and the stored copies of files that were pending upload.
+function mergeSavedReport(current: Report, saved: Report): Report {
+  let changed = false
+  const reportNumber = current.details.reportNumber || saved.details.reportNumber
+  if (reportNumber !== current.details.reportNumber) changed = true
+  const inspections = current.inspections.map((inspection) => {
+    const savedMedia = saved.inspections.find((item) => item.id === inspection.id)?.media ?? []
+    let inspectionChanged = false
+    const media = inspection.media.map((item) => {
+      if (!item.file) return item
+      const stored = savedMedia.find((candidate) => candidate.id === item.id && !candidate.file)
+      if (!stored) return item
+      inspectionChanged = true
+      if (item.url.startsWith('blob:')) URL.revokeObjectURL(item.url)
+      return { ...stored, phase: item.phase, location: item.location, note: item.note }
+    })
+    if (!inspectionChanged) return inspection
+    changed = true
+    return { ...inspection, media }
+  })
+  if (!changed) return current
+  return { ...current, details: { ...current.details, reportNumber }, inspections }
 }

@@ -1,17 +1,19 @@
 'use client'
 
+import { memo } from 'react'
 import type { ReportDetails } from '@/lib/types'
 import { INSPECTORS, PROJECTS } from '@/lib/report-utils'
 import { Field, FormSection, TextInput } from './fields'
 
 type DetailsSectionProps = {
   details: ReportDetails
-  onChange: (details: ReportDetails) => void
+  onChange: (patch: Partial<ReportDetails>) => void
 }
 
-export function DetailsSection({ details, onChange }: DetailsSectionProps) {
+// Memoized so typing in other parts of the form does not re-render these fields.
+export const DetailsSection = memo(function DetailsSection({ details, onChange }: DetailsSectionProps) {
   function set<K extends keyof ReportDetails>(key: K, value: ReportDetails[K]) {
-    onChange({ ...details, [key]: value })
+    onChange({ [key]: value } as Partial<ReportDetails>)
   }
 
   return (
@@ -113,4 +115,4 @@ export function DetailsSection({ details, onChange }: DetailsSectionProps) {
       </div>
     </FormSection>
   )
-}
+})
