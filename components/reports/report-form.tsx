@@ -177,7 +177,7 @@ export function ReportForm({ initialReport, isNew, onCancel, onSave, onAutosave,
         <section aria-labelledby="pdf-heading" className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-4">
           <div className="flex flex-col gap-0.5">
             <h2 id="pdf-heading" className="text-lg font-bold">הפקת דוח PDF</h2>
-            <p className="text-sm leading-relaxed text-muted-foreground">דוח מלא לפי התבנית של שארק: פרטי הלקוח והכתובת, תוצאות הבדיקות וכל תמונות לפני ואחרי.</p>
+            <p className="text-sm leading-relaxed text-muted-foreground">דוח לפי התבנית של שארק עם פרטי הדירה, תוצאות הבדיקות וכל תמונות לפני ואחרי. אם יש סרטונים, יורד קובץ ZIP עם ה-PDF והסרטונים.</p>
           </div>
           <PdfButton report={report} className="h-14 text-base" />
         </section>

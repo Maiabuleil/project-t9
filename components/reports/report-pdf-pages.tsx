@@ -1,11 +1,36 @@
 import type { CSSProperties, ReactNode } from 'react'
-import type { CheckResult, Finding, InspectionId } from '@/lib/types'
+import type { CheckResult, InspectionId } from '@/lib/types'
 
-// Page layout for the generated PDF, matching the company's Word report template.
+// Page layout for the generated PDF. It reproduces the company's Word report template; only the
+// apartment details, inspection results and the report's own photos change from report to report.
 // Styles are inline (plain hex colors, no Tailwind) so the page renders the same when captured to an image.
+//
+// The HTML holds only text, tables and frames. Logos, the watermark and the photos are drawn straight
+// into the PDF at the fixed positions in PDF_LAYOUT: iPhone Safari drops or mis-measures images when a page
+// is captured, which left the PDF without photos.
 
 export const PAGE_WIDTH = 794 // A4 at 96 dpi
 export const PAGE_HEIGHT = 1123
+
+const CONTENT_TOP = 205
+const CONTENT_SIDE = 60
+const PHOTO_HEADER_TOP = 120 // inside the content area
+const PHOTO_HEADER_HEIGHT = 32
+const PHOTO_PADDING = 8
+const PHOTO_AREA_HEIGHT = 520
+const PHOTO_COLUMN_WIDTH = (PAGE_WIDTH - CONTENT_SIDE * 2) / 2
+
+// Page coordinates (px) of everything drawn into the PDF directly.
+export const PDF_LAYOUT = {
+  watermark: { x: (PAGE_WIDTH - 470) / 2, y: 330, width: 470, opacity: 0.16 },
+  logo: { centerX: 40 + (PAGE_WIDTH - 40 - 50) / 2, y: 24 + 18, height: 150 },
+  association: { x: 40, y: 24 + 40, width: 175 },
+  // Right-to-left: "before" is the right-hand column.
+  photos: {
+    before: { x: CONTENT_SIDE + PHOTO_COLUMN_WIDTH + PHOTO_PADDING, y: CONTENT_TOP + PHOTO_HEADER_TOP + PHOTO_HEADER_HEIGHT + PHOTO_PADDING, width: PHOTO_COLUMN_WIDTH - PHOTO_PADDING * 2, height: PHOTO_AREA_HEIGHT },
+    after: { x: CONTENT_SIDE + PHOTO_PADDING, y: CONTENT_TOP + PHOTO_HEADER_TOP + PHOTO_HEADER_HEIGHT + PHOTO_PADDING, width: PHOTO_COLUMN_WIDTH - PHOTO_PADDING * 2, height: PHOTO_AREA_HEIGHT },
+  },
+} as const
 
 const BLUE = '#2E74B5'
 const RED = '#E00000'
@@ -13,11 +38,10 @@ const BORDER = '#BFBFBF'
 const SHADE = '#E7EDF5'
 const FONT = 'Arial, "Segoe UI", "Noto Sans Hebrew", sans-serif'
 
-export type PdfAssets = { logo: string; association: string; watermark: string }
+// `loaded` is false when the photo could not be loaded; the PDF then shows a labelled placeholder.
+export type PdfPhoto = { id: string; loaded: boolean; caption: string; note: string }
 
-export type PdfPhoto = { src: string; caption: string; note: string }
-
-export type PdfPhotoPair = { inspection: string; before: PdfPhoto | null; after: PdfPhoto | null }
+export type PdfPhotoPair = { before: PdfPhoto | null; after: PdfPhoto | null }
 
 export type PdfResultRow = { label: string; result: CheckResult; note: string }
 
@@ -30,10 +54,7 @@ export type PdfData = {
   unit: string
   inspector: string
   results: PdfResultRow[]
-  findings: Finding[]
-  findingsSeverity: Record<string, string>
   photoPairs: PdfPhotoPair[]
-  assets: PdfAssets
 }
 
 export const PDF_INSPECTION_LABELS: Record<InspectionId, string> = {
@@ -43,11 +64,7 @@ export const PDF_INSPECTION_LABELS: Record<InspectionId, string> = {
   'ac-line': 'קו מזגן',
 }
 
-const FINDINGS_PER_PAGE = 4
-
 export function ReportPdfPages({ data }: { data: PdfData }) {
-  const findingPages: Finding[][] = []
-  for (let i = 0; i < data.findings.length; i += FINDINGS_PER_PAGE) findingPages.push(data.findings.slice(i, i + FINDINGS_PER_PAGE))
   const lastPhotoIndex = data.photoPairs.length - 1
 
   return (
@@ -55,17 +72,12 @@ export function ReportPdfPages({ data }: { data: PdfData }) {
       <Page data={data}>
         <CoverContent data={data} />
       </Page>
-      {findingPages.map((findings, index) => (
-        <Page key={`findings-${index}`} data={data}>
-          <FindingsContent findings={findings} offset={index * FINDINGS_PER_PAGE} severity={data.findingsSeverity} />
-        </Page>
-      ))}
-      <Page data={data}>
+      <Page data={data} photoPair={-1}>
         <TermsContent />
         {data.photoPairs.length === 0 && <Closing />}
       </Page>
       {data.photoPairs.map((pair, index) => (
-        <Page key={`photos-${index}`} data={data}>
+        <Page key={`photos-${index}`} data={data} photoPair={index}>
           <PhotoPairContent pair={pair} />
           {index === lastPhotoIndex && <Closing />}
         </Page>
@@ -74,20 +86,16 @@ export function ReportPdfPages({ data }: { data: PdfData }) {
   )
 }
 
-function Page({ data, children }: { data: PdfData; children: ReactNode }) {
+function Page({ data, photoPair = -1, children }: { data: PdfData; photoPair?: number; children: ReactNode }) {
   return (
     <div
       data-pdf-page=""
+      data-photo-pair={photoPair}
       dir="rtl"
       style={{ position: 'relative', width: PAGE_WIDTH, height: PAGE_HEIGHT, overflow: 'hidden', background: '#FFFFFF', color: '#000000', fontFamily: FONT, boxSizing: 'border-box' }}
     >
-      <img
-        src={data.assets.watermark}
-        alt=""
-        style={{ position: 'absolute', left: '50%', top: 330, width: 470, transform: 'translateX(-50%)', opacity: 0.16 }}
-      />
       <Header data={data} />
-      <div style={{ position: 'absolute', top: 205, right: 60, left: 60, bottom: 130 }}>{children}</div>
+      <div style={{ position: 'absolute', top: CONTENT_TOP, right: CONTENT_SIDE, left: CONTENT_SIDE, bottom: 130 }}>{children}</div>
       <Footer />
     </div>
   )
@@ -103,11 +111,8 @@ function Header({ data }: { data: PdfData }) {
         <div>בטכנולוגיה החדשה ביותר</div>
         <div>ח.פ 516079464</div>
       </div>
-      <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translateX(-50%)', textAlign: 'center' }}>
-        <div style={{ color: RED, fontSize: 12, marginBottom: 4 }}>מס&apos; דוח: {data.reportNumber || '—'}</div>
-        <img src={data.assets.logo} alt="" style={{ height: 150 }} />
-      </div>
-      <img src={data.assets.association} alt="" style={{ position: 'absolute', top: 40, left: 0, width: 175 }} />
+      {/* The Shark logo (below this line) and the association logo (left) are drawn into the PDF directly. */}
+      <div style={{ position: 'absolute', top: 0, left: 0, right: 0, textAlign: 'center', color: RED, fontSize: 12, lineHeight: '16px' }}>מס&apos; דוח: {data.reportNumber || '—'}</div>
     </div>
   )
 }
@@ -190,36 +195,6 @@ function ResultMark({ result }: { result: CheckResult }) {
   )
 }
 
-function FindingsContent({ findings, offset, severity }: { findings: Finding[]; offset: number; severity: Record<string, string> }) {
-  return (
-    <div>
-      <h2 style={{ ...sectionTitle, fontSize: 22 }}>ממצאים נוספים</h2>
-      <table style={{ width: '100%', borderCollapse: 'collapse', background: 'rgba(255,255,255,0.8)', tableLayout: 'fixed' }}>
-        <thead>
-          <tr>
-            <th style={{ ...shadedCell, fontWeight: 400, width: 34 }}>#</th>
-            <th style={{ ...shadedCell, fontWeight: 400, width: '20%' }}>מיקום</th>
-            <th style={{ ...shadedCell, fontWeight: 400 }}>תיאור</th>
-            <th style={{ ...shadedCell, fontWeight: 400, width: 74 }}>חומרה</th>
-            <th style={{ ...shadedCell, fontWeight: 400, width: '26%' }}>המלצה</th>
-          </tr>
-        </thead>
-        <tbody>
-          {findings.map((finding, index) => (
-            <tr key={finding.id}>
-              <td style={{ ...cell, verticalAlign: 'top' }}>{offset + index + 1}</td>
-              <td style={{ ...cell, verticalAlign: 'top' }}>{clip(finding.location, 80)}</td>
-              <td style={{ ...cell, verticalAlign: 'top' }}>{clip(finding.description, 320)}</td>
-              <td style={{ ...cell, verticalAlign: 'top' }}>{severity[finding.severity] ?? finding.severity}</td>
-              <td style={{ ...cell, verticalAlign: 'top' }}>{clip(finding.recommendation, 220)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
 const termsHeading: CSSProperties = { color: BLUE, fontSize: 14, margin: '0 0 4px' }
 const termsText: CSSProperties = { fontSize: 14, lineHeight: 1.45, margin: '0 0 9px' }
 
@@ -245,42 +220,46 @@ function TermsContent() {
 }
 
 function PhotoPairContent({ pair }: { pair: PdfPhotoPair }) {
+  const frameTop = PHOTO_HEADER_TOP
+  const areaTop = frameTop + PHOTO_HEADER_HEIGHT
+  const captionTop = areaTop + PHOTO_PADDING + PHOTO_AREA_HEIGHT + PHOTO_PADDING
+  const frameBottom = captionTop + 52
   return (
-    <div style={{ paddingTop: 36 }}>
-      <p style={{ fontSize: 15, fontWeight: 700, margin: '0 0 6px' }}>תיעוד מצולם לפני ואחרי ביצוע הבדיקה</p>
-      <p style={{ fontSize: 13, margin: '0 0 16px' }}>התמונות שלהלן מתעדות את מצב המקטעים לפני הבדיקה ולאחריה, בציון מיקום ותיאור קצר.</p>
-      <p style={{ color: BLUE, fontSize: 15, fontWeight: 700, margin: '0 0 8px' }}>{pair.inspection}</p>
-      <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', background: '#FFFFFF' }}>
-        <thead>
-          <tr>
-            <th style={{ ...shadedCell, fontWeight: 700, textAlign: 'center' }}>לפני</th>
-            <th style={{ ...shadedCell, fontWeight: 700, textAlign: 'center' }}>אחרי</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <PhotoCell photo={pair.before} />
-            <PhotoCell photo={pair.after} />
-          </tr>
-        </tbody>
-      </table>
+    <div style={{ position: 'absolute', inset: 0 }}>
+      <p style={{ position: 'absolute', top: 36, right: 0, fontSize: 15, fontWeight: 700, margin: 0, lineHeight: '20px' }}>תיעוד מצולם לפני ואחרי ביצוע הבדיקה</p>
+      <p style={{ position: 'absolute', top: 62, right: 0, fontSize: 13, margin: 0, lineHeight: '18px' }}>התמונות שלהלן מתעדות את מצב המקטעים לפני הבדיקה ולאחריה, בציון מיקום ותיאור קצר.</p>
+      {/* Two-column frame: header row, photo area (photo drawn into the PDF), caption. */}
+      <div style={{ position: 'absolute', top: frameTop, right: 0, left: 0, height: frameBottom - frameTop, border: `1px solid ${BORDER}`, boxSizing: 'border-box' }} />
+      <div style={{ position: 'absolute', top: frameTop, right: 0, left: 0, height: PHOTO_HEADER_HEIGHT, background: SHADE, borderBottom: `1px solid ${BORDER}`, boxSizing: 'border-box' }} />
+      <div style={{ position: 'absolute', top: frameTop, height: frameBottom - frameTop, left: PHOTO_COLUMN_WIDTH, width: 1, background: BORDER }} />
+      <PhotoColumn side="before" photo={pair.before} headerTop={frameTop} areaTop={areaTop} captionTop={captionTop} />
+      <PhotoColumn side="after" photo={pair.after} headerTop={frameTop} areaTop={areaTop} captionTop={captionTop} />
     </div>
   )
 }
 
-function PhotoCell({ photo }: { photo: PdfPhoto | null }) {
+function PhotoColumn({ side, photo, headerTop, areaTop, captionTop }: { side: 'before' | 'after'; photo: PdfPhoto | null; headerTop: number; areaTop: number; captionTop: number }) {
+  const horizontal: CSSProperties = side === 'before' ? { right: 0 } : { left: 0 }
+  const column: CSSProperties = { position: 'absolute', width: PHOTO_COLUMN_WIDTH, ...horizontal }
   return (
-    <td style={{ ...cell, padding: 8, verticalAlign: 'top' }}>
-      <div style={{ height: 520, display: 'flex', alignItems: 'center', justifyContent: 'center', background: photo ? '#FFFFFF' : '#F4F6F9' }}>
-        {photo ? (
-          <img src={photo.src} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
-        ) : (
-          <span style={{ color: '#7F7F7F', fontSize: 13 }}>אין תמונה</span>
-        )}
+    <>
+      <div style={{ ...column, top: headerTop, height: PHOTO_HEADER_HEIGHT, lineHeight: `${PHOTO_HEADER_HEIGHT}px`, textAlign: 'center', fontSize: 13.5, fontWeight: 700 }}>
+        {side === 'before' ? 'לפני' : 'אחרי'}
       </div>
-      <div style={{ fontSize: 13, marginTop: 8, minHeight: 18 }}>{photo ? clip(photo.caption, 70) : ''}</div>
-      {photo?.note && <div style={{ fontSize: 12, color: '#404040', marginTop: 3 }}>{clip(photo.note, 140)}</div>}
-    </td>
+      {!photo?.loaded && (
+        <div style={{ ...column, top: areaTop + PHOTO_PADDING, height: PHOTO_AREA_HEIGHT, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: PHOTO_COLUMN_WIDTH - PHOTO_PADDING * 2, height: PHOTO_AREA_HEIGHT, background: '#F4F6F9', display: 'flex', alignItems: 'center', justifyContent: 'center', color: photo ? '#C00000' : '#7F7F7F', fontSize: 13 }}>
+            {photo ? 'התמונה לא נטענה' : 'אין תמונה'}
+          </div>
+        </div>
+      )}
+      {photo && (
+        <div style={{ ...column, top: captionTop, padding: `0 ${PHOTO_PADDING + 2}px`, boxSizing: 'border-box' }}>
+          <div style={{ fontSize: 13, lineHeight: '18px', minHeight: 18 }}>{clip(photo.caption, 70)}</div>
+          {photo.note && <div style={{ fontSize: 12, lineHeight: '16px', color: '#404040', marginTop: 3 }}>{clip(photo.note, 110)}</div>}
+        </div>
+      )}
+    </>
   )
 }
 
