@@ -1,7 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { CalendarDays, ChevronLeft, FilePlus2, HardHat, Search, Trash2, X } from 'lucide-react'
+import { CalendarDays, ChevronDown, ChevronLeft, FilePlus2, HardHat, Search, Trash2, UserRound, X } from 'lucide-react'
 import type { Report } from '@/lib/types'
 import { formatDate } from '@/lib/report-utils'
 import { StatusBadge } from './status-badge'
@@ -15,17 +15,52 @@ type ReportListProps = {
   onDelete?: (report: Report) => void
 }
 
+const NO_CLIENT = 'ללא שם לקוח'
+const naturalOrder = new Intl.Collator('he', { numeric: true, sensitivity: 'base' })
+
+type ClientGroup = { client: string; reports: Report[] }
+
+// Groups reports by client name (A→Z, reports without a client last); inside a group the apartments
+// are ordered by building, floor and apartment number.
+function groupByClient(reports: Report[]): ClientGroup[] {
+  const groups = new Map<string, ClientGroup>()
+  for (const report of reports) {
+    const name = report.details.clientName.trim()
+    const key = name.toLocaleLowerCase('he') || NO_CLIENT
+    const group = groups.get(key) ?? { client: name || NO_CLIENT, reports: [] }
+    group.reports.push(report)
+    groups.set(key, group)
+  }
+  const unitOrder = (x: Report, y: Report) =>
+    naturalOrder.compare(x.details.building, y.details.building) ||
+    naturalOrder.compare(x.details.floor, y.details.floor) ||
+    naturalOrder.compare(x.details.apartment, y.details.apartment)
+  return [...groups.values()]
+    .map((group) => ({ ...group, reports: group.reports.sort(unitOrder) }))
+    .sort((x, y) => (x.client === NO_CLIENT ? 1 : y.client === NO_CLIENT ? -1 : naturalOrder.compare(x.client, y.client)))
+}
+
 export function ReportList({ reports, onCreate, onOpen, canDelete = false, onDelete }: ReportListProps) {
   const [query, setQuery] = useState('')
+  const [openClients, setOpenClients] = useState<Set<string>>(() => new Set())
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return reports
-    return reports.filter((r) => {
-      const { address, apartment } = r.details
-      return address.toLowerCase().includes(q) || apartment.toLowerCase().includes(q)
-    })
+  const groups = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase('he')
+    const matching = q ? reports.filter((r) => r.details.clientName.toLocaleLowerCase('he').includes(q)) : reports
+    return groupByClient(matching)
   }, [reports, query])
+
+  const searching = query.trim() !== ''
+  const reportCount = groups.reduce((sum, group) => sum + group.reports.length, 0)
+
+  function toggleClient(client: string) {
+    setOpenClients((prev) => {
+      const next = new Set(prev)
+      if (next.has(client)) next.delete(client)
+      else next.add(client)
+      return next
+    })
+  }
 
   return (
     <main className="flex flex-col gap-6 px-4 pb-10 pt-8">
@@ -45,7 +80,7 @@ export function ReportList({ reports, onCreate, onOpen, canDelete = false, onDel
 
       <div className="relative">
         <label htmlFor="report-search" className="sr-only">
-          חיפוש לפי כתובת או מספר דירה
+          חיפוש לפי שם הלקוח
         </label>
         <Search
           className="pointer-events-none absolute start-4 top-1/2 size-5 -translate-y-1/2 text-muted-foreground"
@@ -57,7 +92,7 @@ export function ReportList({ reports, onCreate, onOpen, canDelete = false, onDel
           inputMode="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="חיפוש לפי כתובת או מספר דירה"
+          placeholder="חיפוש לפי שם הלקוח"
           className="h-14 w-full rounded-xl border border-input bg-card pe-12 ps-12 text-base outline-none placeholder:text-muted-foreground focus:border-primary focus:ring-4 focus:ring-ring/20 [&::-webkit-search-cancel-button]:hidden"
         />
         {query && (
@@ -75,27 +110,58 @@ export function ReportList({ reports, onCreate, onOpen, canDelete = false, onDel
       <section aria-labelledby="reports-heading" className="flex flex-col gap-3">
         <div className="flex items-baseline justify-between">
           <h2 id="reports-heading" className="text-lg font-semibold">
-            דוחות אחרונים
+            דוחות לפי לקוח
           </h2>
           <span className="text-sm text-muted-foreground" aria-live="polite">
-            {filtered.length} דוחות
+            {groups.length} לקוחות · {reportCount} דוחות
           </span>
         </div>
 
-        {filtered.length === 0 ? (
+        {groups.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-input bg-card px-4 py-10 text-center">
             <p className="font-medium">לא נמצאו דוחות</p>
             <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-              נסו לחפש כתובת אחרת או מספר דירה.
+              {searching ? 'לא נמצא לקוח בשם הזה. נסו שם אחר.' : 'עדיין אין דוחות.'}
             </p>
           </div>
         ) : (
           <ul className="flex flex-col gap-3">
-            {filtered.map((report) => (
-              <li key={report.id}>
-                <ReportCard report={report} onOpen={() => onOpen(report)} canDelete={canDelete} onDelete={onDelete} />
-              </li>
-            ))}
+            {groups.map((group) => {
+              // While searching, matching clients open automatically.
+              const open = searching || openClients.has(group.client)
+              const panelId = `client-${encodeURIComponent(group.client)}`
+              return (
+                <li key={group.client} className="overflow-hidden rounded-2xl border border-border bg-card">
+                  <button
+                    type="button"
+                    onClick={() => toggleClient(group.client)}
+                    aria-expanded={open}
+                    aria-controls={panelId}
+                    className="flex min-h-16 w-full items-center gap-3 px-4 py-3 text-start hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-inset focus-visible:ring-ring/30"
+                  >
+                    <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary-soft text-primary">
+                      <UserRound className="size-5" aria-hidden="true" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-base font-bold">{group.client}</span>
+                      <span className="block text-sm text-muted-foreground">
+                        {group.reports.length === 1 ? 'דירה אחת' : `${group.reports.length} דירות`}
+                      </span>
+                    </span>
+                    <ChevronDown className={`size-5 shrink-0 text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden="true" />
+                  </button>
+                  {open && (
+                    <ul id={panelId} className="flex flex-col gap-2 border-t border-border bg-muted/30 p-2">
+                      {group.reports.map((report) => (
+                        <li key={report.id}>
+                          <ReportCard report={report} onOpen={() => onOpen(report)} canDelete={canDelete} onDelete={onDelete} />
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </li>
+              )
+            })}
           </ul>
         )}
       </section>
