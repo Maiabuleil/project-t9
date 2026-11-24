@@ -12,6 +12,19 @@ import { ReportForm } from './report-form'
 import { LoginScreen } from '@/components/auth/login-screen'
 
 const inspectionNames = ['flushing', 'flood', 'camera', 'ac-line'] as const
+// Saving used to report every failure as a connection problem, even when the database refused the change
+// (for example a worker editing a report that belongs to someone else). Each cause now gets its own message.
+function saveErrorMessage(error: { code?: string; message?: string } | null, action: string) {
+  const message = (error?.message ?? '').toLowerCase()
+  if (error?.code === '42501' || message.includes('row-level security') || message.includes('permission denied')) {
+    return `${action}: אין לך הרשאה לעדכן את הדוח הזה. כנראה שהוא שייך למשתמש אחר. פנו למנהל המערכת.`
+  }
+  if (error?.code === 'PGRST301' || message.includes('jwt')) return `${action}: פג תוקף ההתחברות. התנתקו והתחברו מחדש.`
+  if (error?.code === '23505') return `${action}: מספר הדוח כבר קיים בדוח אחר.`
+  if (!error?.code || message.includes('fetch') || message.includes('network')) return `${action}. בדקו את החיבור לאינטרנט ונסו שוב.`
+  return `${action} (קוד ${error.code}). נסו שוב או פנו למנהל המערכת.`
+}
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export type SaveProgress = { fileName: string; done: number; total: number; percent: number }
@@ -123,7 +136,11 @@ export function ReportsApp() {
     // Omit report_number for brand-new reports so the database sequence assigns a unique number (safe under concurrency).
     const payload = report.details.reportNumber ? { ...basePayload, report_number: report.details.reportNumber } : basePayload
     const { data: saved, error } = await supabase.from('reports').upsert(payload).select('id, report_number').single()
-    if (error || !saved) { setMessage('שמירת הדוח נכשלה. בדקו את החיבור ונסו שוב.'); return }
+    if (error || !saved) {
+      console.error('Saving report failed', error?.code, error?.message, error?.details)
+      setMessage(saveErrorMessage(error, 'שמירת הדוח נכשלה'))
+      return
+    }
     const isFilled = (inspection: Inspection) => inspection.result !== null || inspection.note.trim() !== '' || inspection.media.length > 0
     const filledInspections = report.inspections.filter(isFilled)
     const emptyKeys = report.inspections.filter((inspection) => !isFilled(inspection)).map((inspection) => inspection.id)
@@ -131,7 +148,11 @@ export function ReportsApp() {
     let savedInspections: { id: string; inspection_key: string }[] = []
     if (filledInspections.length) {
       const { data: upserted, error: inspectionError } = await supabase.from('inspections').upsert(filledInspections.map((inspection) => ({ report_id: saved.id, inspection_key: inspection.id, result: inspection.result, note: inspection.note })), { onConflict: 'report_id,inspection_key' }).select('id, inspection_key')
-      if (inspectionError) { setMessage('שמירת פרטי הבדיקות נכשלה. נסו שוב.'); return }
+      if (inspectionError) {
+        console.error('Saving inspections failed', inspectionError.code, inspectionError.message)
+        setMessage(saveErrorMessage(inspectionError, 'שמירת פרטי הבדיקות נכשלה'))
+        return
+      }
       savedInspections = upserted ?? []
     }
     const inspectionIds = new Map(savedInspections.map((item) => [item.inspection_key, item.id]))
