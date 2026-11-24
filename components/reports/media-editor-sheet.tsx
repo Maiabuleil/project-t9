@@ -128,7 +128,10 @@ export function MediaEditorSheet({ item, onClose, onUpdate, onRemove }: MediaEdi
           <div className="grid grid-cols-3 gap-2">
             <button
               type="button"
-              onClick={onRemove}
+              onClick={() => {
+                // Deleting a photo is the only way to remove it, so ask first.
+                if (window.confirm('למחוק את התמונה? היא תוסר מהדוח אחרי שמירה.')) onRemove()
+              }}
               className="flex h-14 items-center justify-center gap-2 rounded-xl border border-destructive/40 text-base font-semibold text-destructive hover:bg-destructive-soft"
             >
               <Trash2 className="size-5" aria-hidden="true" />
